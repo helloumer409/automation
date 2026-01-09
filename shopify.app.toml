@@ -7,7 +7,6 @@ embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-04"
@@ -30,6 +29,6 @@ scopes = "write_products,read_orders,write_orders"
 
 [auth]
 redirect_urls = [
-  "https://automation-production-f05f.up.railway.app/auth/callback",
-  "https://automation-production-f05f.up.railway.app/api/auth/callback"
+  "https://automation-production-f05f.up.railway.app/auth/callback"
 ]
+
