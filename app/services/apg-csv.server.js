@@ -3,14 +3,44 @@ import path from "path";
 import csv from "csv-parser";
 
 export async function readAPGCSV() {
-  const filePath = path.join(
-    process.cwd(),
-    "tmp",
-    "premier_data_feed_master.csv"
-  );
+  // Try multiple possible locations for CSV file
+  const possiblePaths = [
+    path.join(process.cwd(), "tmp", "premier_data_feed_master.csv"),
+    path.join(process.cwd(), "tmp", "apg", "premier_data_feed_master.csv"),
+    path.join("/tmp", "apg", "premier_data_feed_master.csv"),
+    path.join(process.env.TMPDIR || process.env.TMP || "/tmp", "apg", "premier_data_feed_master.csv"),
+  ];
 
-  if (!fs.existsSync(filePath)) {
-    throw new Error("CSV file not found");
+  let filePath = null;
+  for (const possiblePath of possiblePaths) {
+    if (fs.existsSync(possiblePath)) {
+      filePath = possiblePath;
+      break;
+    }
+  }
+
+  // Also try to find any CSV file in tmp/apg directories
+  if (!filePath) {
+    const tmpDirs = [
+      path.join(process.cwd(), "tmp", "apg"),
+      path.join("/tmp", "apg"),
+      path.join(process.env.TMPDIR || process.env.TMP || "/tmp", "apg"),
+    ];
+    
+    for (const tmpDir of tmpDirs) {
+      if (fs.existsSync(tmpDir)) {
+        const files = fs.readdirSync(tmpDir);
+        const csvFile = files.find(f => f.endsWith(".csv"));
+        if (csvFile) {
+          filePath = path.join(tmpDir, csvFile);
+          break;
+        }
+      }
+    }
+  }
+
+  if (!filePath) {
+    throw new Error(`CSV file not found. Checked paths: ${possiblePaths.join(", ")}`);
   }
 
   const results = [];
