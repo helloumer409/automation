@@ -17,7 +17,10 @@ APG_USE_API=true
 
 # APG API Base URL
 # Contact your supplier for the correct API endpoint URL
-APG_API_BASE_URL=https://api.premierwd.com/api/v1
+APG_USE_API=true
+APG_API_BASE_URL=https://api.premierwd.com/api/v5
+APG_API_KEY=3720887b-7625-43ec-a57e-62ddbf3edf64
+
 
 # APG API Key (provided by your supplier)
 APG_API_KEY=3720887b-7625-43ec-a57e-62ddbf3edf64

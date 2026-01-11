@@ -3,8 +3,34 @@
  * Fetches product inventory and pricing data directly from APG API
  */
 
-const APG_API_BASE_URL = process.env.APG_API_BASE_URL || "https://api.premierwd.com/api/v1";
+const APG_API_BASE_URL = process.env.APG_API_BASE_URL || "https://api.premierwd.com/api/v5";
 const APG_API_KEY = process.env.APG_API_KEY || "3720887b-7625-43ec-a57e-62ddbf3edf64";
+
+
+let sessionToken = null;
+let tokenTime = null;
+const TOKEN_TTL = 1000 * 60 * 50; // 50 minutes
+
+async function authenticateAPG() {
+  if (sessionToken && tokenTime && (Date.now() - tokenTime) < TOKEN_TTL) {
+    return sessionToken;
+  }
+
+  const url = `${APG_API_BASE_URL}/authenticate?apiKey=${APG_API_KEY}`;
+  console.log("🔐 Authenticating with APG...");
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error("❌ APG authentication failed");
+  }
+
+  const json = await res.json();
+  sessionToken = json.sessionToken;
+  tokenTime = Date.now();
+
+  console.log("✅ APG authenticated successfully");
+  return sessionToken;
+}
 
 let apiCache = null;
 let cacheTimestamp = null;
@@ -23,7 +49,7 @@ export async function fetchAPGInventory() {
 
   try {
     console.log("🔄 Fetching data from APG API...");
-    
+    const token = await authenticateAPG();
     // Try common API endpoints
     const endpoints = [
       "/inventory",
@@ -44,11 +70,9 @@ export async function fetchAPGInventory() {
         const response = await fetch(url, {
           method: "GET",
           headers: {
-            "Authorization": `Bearer ${APG_API_KEY}`,
-            "X-API-Key": APG_API_KEY,
+            "Authorization": `Bearer ${token}`,
             "Accept": "application/json",
-            "Content-Type": "application/json",
-          },
+          },          
         });
 
         if (response.ok) {
