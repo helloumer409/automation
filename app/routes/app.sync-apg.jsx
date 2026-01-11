@@ -24,13 +24,27 @@ export async function action({ request }) {
           continue;
         }
 
-        // Normalize barcode (remove leading zeros) for lookup
-        const normalizedBarcode = String(variant.barcode).replace(/^0+/, "").trim();
-        let apgItem = apgIndex.get(normalizedBarcode);
+        // Try multiple barcode formats for matching
+        const barcodeStr = String(variant.barcode).trim();
+        const normalizedBarcode = barcodeStr.replace(/^0+/, ""); // Remove leading zeros
+        const padded12 = normalizedBarcode.padStart(12, "0");
+        const padded13 = normalizedBarcode.padStart(13, "0");
+        const padded14 = normalizedBarcode.padStart(14, "0");
         
-        // Try original barcode if normalized doesn't match
-        if (!apgItem) {
-          apgItem = apgIndex.get(String(variant.barcode).trim());
+        let apgItem = null;
+        
+        // Try multiple formats
+        const lookupKeys = [
+          barcodeStr,              // Original format: "00012748802600"
+          normalizedBarcode,       // Without leading zeros: "12748802600"
+          padded12,                // 12-digit
+          padded13,                // 13-digit
+          padded14                 // 14-digit
+        ];
+        
+        for (const key of lookupKeys) {
+          apgItem = apgIndex.get(key);
+          if (apgItem) break;
         }
         
         // Try SKU as fallback
@@ -40,9 +54,11 @@ export async function action({ request }) {
 
         if (!apgItem) {
           skipped++;
-          console.log("⏭ No APG match found for barcode:", variant.barcode, "SKU:", variant.sku);
+          console.log(`⏭ No APG match for barcode: "${variant.barcode}" SKU: "${variant.sku}"`);
           continue;
         }
+        
+        console.log(`✓ Found APG match for ${variant.sku || variant.barcode}`);
 
         // Import sync function dynamically to avoid circular dependencies if any
         const { syncAPGVariant } = await import("../services/apg-sync.server");
