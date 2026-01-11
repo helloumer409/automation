@@ -4,27 +4,30 @@ let cachedLocationId = null;
 async function getLocationId(admin) {
   if (cachedLocationId) return cachedLocationId;
 
-  const locationsResponse = await admin.graphql(`#graphql
-    query {
-      locations(first: 10) {
-        nodes {
-          id
-          name
-          active
+  try {
+    const locationsResponse = await admin.graphql(`#graphql
+      query {
+        locations(first: 10) {
+          nodes {
+            id
+            name
+          }
         }
       }
+    `);
+    
+    const locationsResult = await locationsResponse.json();
+    // Just get the first location (most shops have one primary location)
+    const location = locationsResult.data?.locations?.nodes?.[0];
+    cachedLocationId = location?.id || null;
+    
+    if (cachedLocationId) {
+      console.log(`📍 Using location: ${location.name} (${cachedLocationId})`);
+    } else {
+      console.warn("⚠️ No location found in Shopify");
     }
-  `);
-  
-  const locationsResult = await locationsResponse.json();
-  const activeLocation = locationsResult.data?.locations?.nodes?.find(loc => loc.active) || 
-                         locationsResult.data?.locations?.nodes?.[0];
-  cachedLocationId = activeLocation?.id || null;
-  
-  if (cachedLocationId) {
-    console.log(`📍 Using location: ${activeLocation.name} (${cachedLocationId})`);
-  } else {
-    console.warn("⚠️ No location found in Shopify");
+  } catch (error) {
+    console.warn("⚠️ Could not fetch locations:", error.message);
   }
   
   return cachedLocationId;
@@ -75,6 +78,18 @@ export async function syncAPGVariant({
   }
 
   console.log(`💰 Processing ${variant.sku || variant.barcode} - MAP: $${mapPrice.toFixed(2)}${costPrice ? `, Cost: $${costPrice.toFixed(2)}` : " (no cost)"}`);
+  
+  // Verify barcode/UPC match for debugging
+  const shopifyBarcode = String(variant.barcode || "").trim();
+  const apgUpc = String(apgRow.Upc || apgRow.upc || "").trim();
+  const shopifyBarcodeNorm = shopifyBarcode.replace(/^0+/, "");
+  const apgUpcNorm = apgUpc.replace(/^0+/, "");
+  
+  if (shopifyBarcode && apgUpc && shopifyBarcodeNorm !== apgUpcNorm) {
+    console.warn(`⚠️ Potential barcode mismatch - Shopify: "${shopifyBarcode}" (normalized: "${shopifyBarcodeNorm}") vs APG: "${apgUpc}" (normalized: "${apgUpcNorm}")`);
+  } else if (shopifyBarcode && apgUpc) {
+    console.log(`✓ Barcode match confirmed: ${shopifyBarcodeNorm}`);
+  }
 
   /* 1️⃣ PRICE */
   const priceResponse = await admin.graphql(`#graphql

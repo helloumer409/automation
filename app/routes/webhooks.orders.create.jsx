@@ -73,10 +73,75 @@ export async function action({ request }) {
     try {
       const result = await fulfillOrderViaAPG(orderItems, order);
       console.log(`✅ Order #${order.order_number || order.id} fulfilled via APG:`, result);
+      
+      // Store APG order info in order metafields for tracking
+      if (admin && order.id) {
+        try {
+          await admin.graphql(`#graphql
+            mutation {
+              orderUpdate(
+                id: "${order.id}",
+                input: {
+                  note: "APG Order Number: ${result.apgOrderNumber || 'Pending'}"
+                  customAttributes: [
+                    {key: "apg_order_number", value: "${result.apgOrderNumber || 'Pending'}"}
+                    {key: "apg_order_status", value: "submitted"}
+                    {key: "apg_order_date", value: "${new Date().toISOString()}"}
+                  ]
+                }
+              ) {
+                order {
+                  id
+                  note
+                  customAttributes {
+                    key
+                    value
+                  }
+                }
+                userErrors {
+                  field
+                  message
+                }
+              }
+            }
+          `);
+          console.log(`📝 APG order info stored in order metafields`);
+        } catch (metaError) {
+          console.warn(`⚠️ Could not update order metafields:`, metaError.message);
+        }
+      }
     } catch (error) {
       console.error(`❌ Failed to fulfill order #${order.order_number || order.id} via APG:`, error.message);
+      
+      // Store error status in metafields
+      if (admin && order.id) {
+        try {
+          await admin.graphql(`#graphql
+            mutation {
+              orderUpdate(
+                id: "${order.id}",
+                input: {
+                  customAttributes: [
+                    {key: "apg_order_status", value: "failed"}
+                    {key: "apg_order_error", value: "${String(error.message).substring(0, 100)}"}
+                  ]
+                }
+              ) {
+                order {
+                  id
+                  customAttributes {
+                    key
+                    value
+                  }
+                }
+              }
+            }
+          `);
+        } catch (metaError) {
+          // Ignore metafield update errors
+        }
+      }
       // Don't fail the webhook - log error but return OK
-      // You might want to implement retry logic or notification here
     }
 
     return new Response("OK", { status: 200 });
