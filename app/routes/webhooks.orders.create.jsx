@@ -1,15 +1,21 @@
 /**
  * Webhook handler for order creation
- * Automatically fulfills orders via APG API
+ * DISABLED: Order fulfillment is now manual via button click in order dashboard
+ * This webhook just logs orders but does not auto-fulfill
  */
 import { authenticate } from "../shopify.server.js";
-import { fulfillOrderViaAPG } from "../services/apg-order.server";
 
 export async function action({ request }) {
   const { payload, topic, shop, admin } = await authenticate.webhook(request);
 
-  console.log(`📦 Received ${topic} webhook for ${shop}`);
+  console.log(`📦 Received ${topic} webhook for ${shop} - Order #${payload.order_number || payload.id}`);
+  console.log(`ℹ️  Automatic order fulfillment is DISABLED. Use manual "Send to APG" button in order details.`);
 
+  // Just acknowledge the webhook - don't auto-fulfill
+  // Orders must be manually sent to APG via button click
+  return new Response("OK", { status: 200 });
+  
+  /* DISABLED AUTO-FULFILLMENT CODE
   try {
     // Only process paid orders
     if (payload.financial_status !== "paid" && payload.financial_status !== "pending") {

@@ -121,21 +121,22 @@ export async function syncAPGVariant({
   }
 
   /* 2️⃣ INVENTORY TRACKING & QUANTITY */
-  // Calculate inventory from warehouse columns if available, otherwise use USA Item Availability
+  // Always try to enable tracking - this is required for cost to show
+  // Use "USA Item Availability" column from CSV as primary source
+  const usaAvailability = Number(apgRow["USA Item Availability"] || 0) || 0;
+  
+  // Also calculate from warehouse columns as fallback
   const nvWhse = Number(apgRow["NV whse"] || 0) || 0;
   const kyWhse = Number(apgRow["KY whse"] || 0) || 0;
   const mfgInvt = Number(apgRow["MFG Invt"] || 0) || 0;
   const waWhse = Number(apgRow["WA whse"] || 0) || 0;
   const warehouseTotal = nvWhse + kyWhse + mfgInvt + waWhse;
   
-  // Use warehouse total if available, otherwise fall back to USA Item Availability
-  const inventoryQtyStr = warehouseTotal > 0 
-    ? warehouseTotal 
-    : (apgRow["USA Item Availability"] || apgRow.inventory || apgRow["Inventory"] || "0");
-  const inventoryQty = Math.max(0, Math.floor(Number(inventoryQtyStr) || 0));
+  // Prefer "USA Item Availability", fallback to warehouse total
+  const inventoryQty = Math.max(0, Math.floor(usaAvailability > 0 ? usaAvailability : warehouseTotal));
   
-  // Try to enable tracking, but don't fail if we don't have permission
-  // This allows price updates to continue even if inventory scope is missing
+  // ALWAYS enable tracking - required for cost visibility
+  // Wrap in try-catch but don't let it block price/cost updates
   try {
     const trackingResponse = await admin.graphql(`#graphql
       mutation {
@@ -308,48 +309,67 @@ export async function syncAPGVariant({
     }
   }
 
-  /* 3️⃣ COST - Set cost using unitCost field (visible in product edit page) */
+  /* 3️⃣ COST - Set cost (visible in product edit page when tracking is enabled) */
+  // Cost MUST be set after tracking is enabled
   if (costPrice && costPrice > 0) {
-    // Wrap cost update in try-catch to not fail if scope is missing
     try {
-      // Try setting cost via inventoryItemUpdate with unitCost field
-      // This makes cost visible in the product edit page under "Cost"
-      const costResponse = await admin.graphql(`#graphql
-        mutation {
-          inventoryItemUpdate(
-            id: "${variant.inventoryItem.id}",
-            input: { 
-              tracked: true
-              unitCost: "${costPrice.toFixed(2)}" 
-            }
-          ) {
-            userErrors { message field }
-            inventoryItem {
-              id
-              unitCost
-              tracked
-            }
-          }
-        }
-      `);
+      // Get location ID first (needed for cost setting)
+      const locationId = await getLocationId(admin);
       
-      const costResult = await costResponse.json();
-      if (costResult.data?.inventoryItemUpdate?.userErrors?.length > 0) {
-        const errors = costResult.data.inventoryItemUpdate.userErrors;
-        const isScopeError = errors.some(e => e.message.includes("access") || e.message.includes("scope") || e.message.includes("permission"));
-        if (isScopeError) {
-          console.warn(`⚠️ Cost update skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
-        } else {
-          // If unitCost doesn't work, try setting as metafield for visibility
-          console.warn(`⚠️ Cost field error, trying metafield approach: ${errors.map(e => e.message).join(", ")}`);
-          try {
-            await setCostAsMetafield(admin, variant.id, costPrice);
-          } catch (metaError) {
-            console.warn(`⚠️ Cost metafield also failed: ${metaError.message}`);
+      if (locationId) {
+        // Use inventoryAdjustQuantitySet to set both quantity and cost together
+        // This is the most reliable way to set cost in Shopify
+        const costResponse = await admin.graphql(`#graphql
+          mutation {
+            inventoryAdjustQuantitySet(
+              reason: "correction"
+              setQuantities: [{
+                inventoryItemId: "${variant.inventoryItem.id}"
+                locationId: "${locationId}"
+                quantity: ${inventoryQty}
+                unitCost: "${costPrice.toFixed(2)}"
+              }]
+            ) {
+              inventoryAdjustmentGroup {
+                reason
+                changes {
+                  name
+                  delta
+                }
+              }
+              userErrors {
+                field
+                message
+              }
+            }
           }
+        `);
+        
+        const costResult = await costResponse.json();
+        if (costResult.data?.inventoryAdjustQuantitySet?.userErrors?.length > 0) {
+          const errors = costResult.data.inventoryAdjustQuantitySet.userErrors;
+          const isScopeError = errors.some(e => e.message.includes("access") || e.message.includes("scope") || e.message.includes("permission"));
+          if (isScopeError) {
+            console.warn(`⚠️ Cost update skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
+          } else {
+            console.warn(`⚠️ Cost update warning: ${errors.map(e => e.message).join(", ")}`);
+            // Try metafield as fallback for visibility
+            try {
+              await setCostAsMetafield(admin, variant.id, costPrice);
+            } catch (metaError) {
+              // Silently fail - cost will show once scope is granted
+            }
+          }
+        } else {
+          console.log(`💰 Cost set to $${costPrice.toFixed(2)} for ${variant.sku || variant.barcode} (visible in product edit page)`);
         }
-      } else if (costResult.data?.inventoryItemUpdate?.inventoryItem?.unitCost) {
-        console.log(`💰 Cost set to $${costPrice.toFixed(2)} for ${variant.sku || variant.barcode} (visible in product edit page)`);
+      } else {
+        // No location - try metafield only
+        try {
+          await setCostAsMetafield(admin, variant.id, costPrice);
+        } catch (metaError) {
+          console.warn(`⚠️ Cost update skipped (no location found) for ${variant.sku || variant.barcode}`);
+        }
       }
     } catch (costError) {
       const errorMsg = costError.message || String(costError);
@@ -357,7 +377,7 @@ export async function syncAPGVariant({
       if (isScopeError) {
         console.warn(`⚠️ Cost update skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
       } else {
-        // Try metafield as fallback
+        // Try metafield as last resort
         try {
           await setCostAsMetafield(admin, variant.id, costPrice);
         } catch (metaError) {

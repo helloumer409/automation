@@ -87,12 +87,30 @@ async function readAPGCSVFromPath(csvPath) {
     fs.createReadStream(csvPath)
       .pipe(csv())
       .on("data", (row) => {
+        // Handle UPC - convert scientific notation (e.g., 8.34532E+11) to proper number
+        let upcRaw = row["Upc"] || row["UPC"] || row["upc"] || "";
+        let upc = String(upcRaw).trim();
+        
+        // Convert scientific notation to full number
+        if (upc.includes("E+") || upc.includes("e+") || upc.includes("E-") || upc.includes("e-")) {
+          try {
+            const numValue = parseFloat(upc);
+            upc = Math.round(numValue).toString();
+          } catch (e) {
+            // Keep original if conversion fails
+          }
+        }
+        
         // Calculate total inventory from all warehouse columns
         const nvWhse = Number(row["NV whse"] || row["NV Whse"] || 0) || 0;
         const kyWhse = Number(row["KY whse"] || row["KY Whse"] || 0) || 0;
         const mfgInvt = Number(row["MFG Invt"] || row["MFG Invt"] || 0) || 0;
         const waWhse = Number(row["WA whse"] || row["WA Whse"] || 0) || 0;
-        const totalInventory = nvWhse + kyWhse + mfgInvt + waWhse;
+        const warehouseTotal = nvWhse + kyWhse + mfgInvt + waWhse;
+        
+        // Use "USA Item Availability" column first, fallback to warehouse total
+        const usaAvailability = Number(row["USA Item Availability"] || 0) || 0;
+        const totalInventory = usaAvailability > 0 ? usaAvailability : warehouseTotal;
         
         // Try multiple possible field names for MAP and Cost
         const mapPrice = row["MAP"] || row["Map"] || row["map"] || row["MAP Price"] || row["MAP Price (USD)"];
@@ -100,12 +118,12 @@ async function readAPGCSVFromPath(csvPath) {
         
         // Preserve original row structure for compatibility
         const processedRow = {
-          upc: row["Upc"]?.trim() || row["UPC"]?.trim() || row["upc"]?.trim(),
+          upc: upc,
           premierPartNumber: row["Premier Part Number"]?.trim() || row["Premier Part #"]?.trim(),
           priceMAP: mapPrice,
           inventory: totalInventory,
           // Keep original fields for sync function compatibility
-          Upc: row["Upc"]?.trim() || row["UPC"]?.trim() || row["upc"]?.trim(),
+          Upc: upc,
           "Premier Part Number": row["Premier Part Number"]?.trim() || row["Premier Part #"]?.trim(),
           MAP: mapPrice,
           "Customer Price": customerPrice,
@@ -113,8 +131,8 @@ async function readAPGCSVFromPath(csvPath) {
           Cost: customerPrice,
           cost: customerPrice,
           "Mfg Part Number": row["Mfg Part Number"] || row["Manufacturer Part Number"] || row["Mfg Part #"],
-          "USA Item Availability": totalInventory,
-          // Warehouse breakdown
+          "USA Item Availability": totalInventory, // Use calculated value
+          // Warehouse breakdown (for reference)
           "NV whse": nvWhse,
           "KY whse": kyWhse,
           "MFG Invt": mfgInvt,
