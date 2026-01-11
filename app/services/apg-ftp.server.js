@@ -1,35 +1,51 @@
 import ftp from "basic-ftp";
 import fs from "fs";
 import path from "path";
+import unzipper from "unzipper";
 
-export async function downloadAPGFeed() {
+export async function downloadAndPrepareAPGCSV() {
   const client = new ftp.Client();
   client.ftp.verbose = true;
 
-  try {
-    const downloadDir = path.resolve("./tmp");
-    if (!fs.existsSync(downloadDir)) {
-      fs.mkdirSync(downloadDir);
-    }
+  const tmpDir = path.resolve("./tmp");
+  const zipPath = path.join(tmpDir, "premier_data_feed_master.zip");
+  const extractDir = path.join(tmpDir, "apg");
 
+  try {
+    // Ensure dirs
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir);
+    if (!fs.existsSync(extractDir)) fs.mkdirSync(extractDir);
+
+    // FTP connect
     await client.access({
-      host: "datafeed.pppwd.com",
-      user: "77-0001025",
-      password: "premierpass",
-      port: 21,
+      host: process.env.APG_FTP_HOST,
+      user: process.env.APG_FTP_USERNAME,
+      password: process.env.APG_FTP_PASSWORD,
+      port: Number(process.env.APG_FTP_PORT),
       secure: false,
     });
 
-    const localZipPath = path.join(downloadDir, "premier_data_feed_master.zip");
+    // Download ZIP
+    await client.downloadTo(zipPath, "premier_data_feed_master.zip");
+    console.log("✅ APG ZIP downloaded");
 
-    await client.downloadTo(
-      localZipPath,
-      "premier_data_feed_master.zip"
-    );
+    // Unzip
+    await fs
+      .createReadStream(zipPath)
+      .pipe(unzipper.Extract({ path: extractDir }))
+      .promise();
 
-    console.log("✅ APG ZIP downloaded:", localZipPath);
-  } catch (err) {
-    console.error("❌ FTP ERROR:", err);
+    console.log("✅ APG ZIP extracted");
+
+    // Find CSV
+    const files = fs.readdirSync(extractDir);
+    const csvFile = files.find(f => f.endsWith(".csv"));
+
+    if (!csvFile) {
+      throw new Error("No CSV found inside ZIP");
+    }
+
+    return path.join(extractDir, csvFile);
   } finally {
     client.close();
   }
