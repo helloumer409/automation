@@ -10,12 +10,17 @@ export async function action({ request }) {
     // Clear location cache at start of sync
     clearLocationCache();
     
+    console.log("📥 Loading APG data from CSV...");
     const apgIndex = await getAPGIndex();
+    console.log(`✅ APG index loaded: ${apgIndex.size} items`);
+    
+    console.log("📦 Fetching Shopify products...");
     const shopifyProducts = await getShopifyProducts(admin);
+    console.log(`✅ Fetched ${shopifyProducts.length} products from Shopify`);
 
-    let synced = 0;
-    let skipped = 0;
-    const errors = [];
+      let synced = 0;
+      let skipped = 0;
+      const errors = [];
     
     // Calculate total variants for progress tracking
     const totalVariants = shopifyProducts.reduce((sum, p) => sum + (p.variants?.nodes?.length || 0), 0);

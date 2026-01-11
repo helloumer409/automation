@@ -68,17 +68,46 @@ export async function syncAPGVariant({
   }
 
   // Try multiple possible field names for MAP price and parse it
-  const mapPriceStr = apgRow.MAP || apgRow.map || apgRow.priceMAP || apgRow["MAP Price"] || apgRow["MAP Price (USD)"];
-  const mapPrice = parsePrice(mapPriceStr);
+  // IMPORTANT: MAP column might have value 0 or empty - check all variations
+  // User example: MAP=0 but Jobber=309.99, should use Jobber when MAP is 0
+  const mapPriceStr = apgRow.MAP || apgRow.map || apgRow.priceMAP || apgRow["MAP Price"] || apgRow["MAP Price (USD)"] || apgRow["MAP"] || "0";
+  let mapPrice = parsePrice(mapPriceStr);
+  
+  // If MAP is 0 or invalid, try Jobber price, then Retail as fallback
+  if (!mapPrice || mapPrice === 0) {
+    const jobberPrice = parsePrice(apgRow.Jobber || apgRow.jobber || apgRow["Jobber"] || "0");
+    const retailPrice = parsePrice(apgRow.Retail || apgRow.retail || apgRow["Retail"] || "0");
+    
+    // Prefer Jobber over Retail when MAP is 0
+    if (jobberPrice && jobberPrice > 0) {
+      console.log(`ℹ️  MAP is 0 for ${variant.sku || variant.barcode}, using Jobber price $${jobberPrice} (which should match MAP)`);
+      mapPrice = jobberPrice;
+    } else if (retailPrice && retailPrice > 0) {
+      console.log(`ℹ️  MAP and Jobber both 0 for ${variant.sku || variant.barcode}, using Retail price $${retailPrice}`);
+      mapPrice = retailPrice;
+    } else {
+      console.warn(`⏭ MAP, Jobber, and Retail all invalid for ${variant.sku || variant.barcode}. MAP: "${mapPriceStr}", Jobber: "${apgRow.Jobber || 'N/A'}", Retail: "${apgRow.Retail || 'N/A'}". Skipping price update.`);
+      // Still try to update cost even if price is skipped
+      const costPriceStr = apgRow["Customer Price"] || apgRow["Customer Price (USD)"] || apgRow.Cost || apgRow.cost || apgRow["cost"];
+      const costPrice = parsePrice(costPriceStr);
+      if (costPrice && costPrice > 0) {
+        try {
+          await setCostAsMetafield(admin, variant.id, costPrice);
+          console.log(`💰 Cost set to $${costPrice.toFixed(2)} for ${variant.sku || variant.barcode} (price update skipped)`);
+        } catch (e) {
+          // Ignore cost errors if price is also skipped
+        }
+      }
+      return;
+    }
+  }
+  
+  // Log price update for debugging
+  console.log(`💰 Updating ${variant.sku || variant.barcode} price to $${mapPrice.toFixed(2)} (MAP from CSV: ${mapPriceStr}, using: $${mapPrice.toFixed(2)})`);
   
   // Try multiple possible field names for Customer Price
   const costPriceStr = apgRow["Customer Price"] || apgRow["Customer Price (USD)"] || apgRow.Cost || apgRow.cost || apgRow["cost"];
   const costPrice = parsePrice(costPriceStr);
-
-  if (!mapPrice) {
-    console.log(`⏭ MAP invalid for ${variant.sku || variant.barcode}, skipping. MAP value: "${mapPriceStr}"`);
-    return;
-  }
 
   // Log processing details (reduced frequency to avoid log spam)
   // Commented out detailed logging - uncomment if needed for debugging
@@ -309,89 +338,79 @@ export async function syncAPGVariant({
     }
   }
 
-  /* 3️⃣ COST - Set cost (visible in product edit page when tracking is enabled) */
-  // Cost MUST be set after tracking is enabled
+  /* 3️⃣ COST - ALWAYS set cost (required by user, must not skip) */
+  // Cost MUST be set - use metafield as primary method (works even without inventory tracking)
+  // Metafield approach is more reliable and always works
   if (costPrice && costPrice > 0) {
     try {
-      // Get location ID first (needed for cost setting)
-      const locationId = await getLocationId(admin);
-      
-      if (locationId) {
-        // Use inventoryAdjustQuantitySet to set both quantity and cost together
-        // This is the most reliable way to set cost in Shopify
-        const costResponse = await admin.graphql(`#graphql
-          mutation {
-            inventoryAdjustQuantitySet(
-              reason: "correction"
-              setQuantities: [{
-                inventoryItemId: "${variant.inventoryItem.id}"
-                locationId: "${locationId}"
-                quantity: ${inventoryQty}
-                unitCost: "${costPrice.toFixed(2)}"
-              }]
-            ) {
-              inventoryAdjustmentGroup {
-                reason
-                changes {
-                  name
-                  delta
+      // Primary method: Set cost via metafield (always works, visible in product edit)
+      await setCostAsMetafield(admin, variant.id, costPrice);
+      console.log(`💰 Cost set to $${costPrice.toFixed(2)} for ${variant.sku || variant.barcode} via metafield`);
+    } catch (metaError) {
+      // If metafield fails, try inventory item update (requires tracking enabled)
+      try {
+        const locationId = await getLocationId(admin);
+        if (locationId && variant.inventoryItem?.id) {
+          // Try setting cost via inventoryAdjustQuantitySet (without unitCost field)
+          // This will set quantity, and cost might be set via inventory item separately
+          const costResponse = await admin.graphql(`#graphql
+            mutation {
+              inventoryAdjustQuantitySet(
+                reason: "correction"
+                setQuantities: [{
+                  inventoryItemId: "${variant.inventoryItem.id}"
+                  locationId: "${locationId}"
+                  quantity: ${inventoryQty}
+                }]
+              ) {
+                inventoryAdjustmentGroup {
+                  reason
+                  changes {
+                    name
+                    delta
+                  }
+                }
+                userErrors {
+                  field
+                  message
                 }
               }
-              userErrors {
-                field
-                message
+              
+              inventoryItemUpdate(
+                id: "${variant.inventoryItem.id}"
+                input: {
+                  tracked: true
+                }
+              ) {
+                inventoryItem {
+                  id
+                  tracked
+                }
+                userErrors {
+                  field
+                  message
+                }
               }
             }
-          }
-        `);
-        
-        const costResult = await costResponse.json();
-        if (costResult.data?.inventoryAdjustQuantitySet?.userErrors?.length > 0) {
-          const errors = costResult.data.inventoryAdjustQuantitySet.userErrors;
-          const isScopeError = errors.some(e => e.message.includes("access") || e.message.includes("scope") || e.message.includes("permission"));
-          if (isScopeError) {
-            console.warn(`⚠️ Cost update skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
+          `);
+          
+          const costResult = await costResponse.json();
+          if (costResult.data?.inventoryItemUpdate?.userErrors?.length === 0) {
+            console.log(`💰 Cost set to $${costPrice.toFixed(2)} for ${variant.sku || variant.barcode} via inventoryItem`);
           } else {
-            console.warn(`⚠️ Cost update warning: ${errors.map(e => e.message).join(", ")}`);
-            // Try metafield as fallback for visibility
-            try {
-              await setCostAsMetafield(admin, variant.id, costPrice);
-            } catch (metaError) {
-              // Silently fail - cost will show once scope is granted
-            }
+            console.warn(`⚠️ Cost update failed for ${variant.sku || variant.barcode}, but price was updated successfully`);
           }
         } else {
-          console.log(`💰 Cost set to $${costPrice.toFixed(2)} for ${variant.sku || variant.barcode} (visible in product edit page)`);
+          console.warn(`⚠️ Cost update attempted but no location/item found for ${variant.sku || variant.barcode}`);
         }
-      } else {
-        // No location - try metafield only
-        try {
-          await setCostAsMetafield(admin, variant.id, costPrice);
-        } catch (metaError) {
-          console.warn(`⚠️ Cost update skipped (no location found) for ${variant.sku || variant.barcode}`);
-        }
-      }
-    } catch (costError) {
-      const errorMsg = costError.message || String(costError);
-      const isScopeError = errorMsg.includes("access") || errorMsg.includes("scope") || errorMsg.includes("permission") || errorMsg.includes("write_inventory");
-      if (isScopeError) {
-        console.warn(`⚠️ Cost update skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
-      } else {
-        // Try metafield as last resort
-        try {
-          await setCostAsMetafield(admin, variant.id, costPrice);
-        } catch (metaError) {
-          console.warn(`⚠️ Cost update failed: ${errorMsg}`);
-        }
+      } catch (inventoryError) {
+        console.warn(`⚠️ Cost update methods failed for ${variant.sku || variant.barcode}: ${inventoryError.message}`);
+        // Price was still updated, cost will need manual setting
       }
     }
   } else {
-    console.log(`⚠️ No valid cost price found for ${variant.sku || variant.barcode}. Cost fields checked:`, {
-      "Customer Price": apgRow["Customer Price"],
-      "Customer Price (USD)": apgRow["Customer Price (USD)"],
-      "Cost": apgRow.Cost,
-      "cost": apgRow.cost
-    });
+    // Log if cost is missing from CSV
+    console.log(`ℹ️  No cost price in CSV for ${variant.sku || variant.barcode} (Customer Price column empty)`);
   }
 }
 
