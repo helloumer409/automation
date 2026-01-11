@@ -148,8 +148,14 @@ export async function syncAPGVariant({
       console.log(`✓ Tracking enabled for ${variant.sku || variant.barcode}`);
     }
   } catch (trackingError) {
-    // If tracking fails due to scope, continue with price update
-    console.warn(`⚠️ Could not enable tracking for ${variant.sku || variant.barcode}: ${trackingError.message}. Continuing with price update...`);
+    // Catch GraphQL errors - the client throws when there are GraphQL errors
+    const errorMessage = trackingError.message || String(trackingError);
+    const isScopeError = errorMessage.includes("access") || errorMessage.includes("scope") || errorMessage.includes("permission") || errorMessage.includes("write_inventory");
+    if (isScopeError) {
+      console.warn(`⚠️ Inventory tracking skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}. Price updated successfully. Reinstall app to grant inventory permissions.`);
+    } else {
+      console.warn(`⚠️ Could not enable tracking for ${variant.sku || variant.barcode}: ${errorMessage}. Continuing with price update...`);
+    }
   }
 
   // Get location ID for inventory level (cached)
@@ -183,81 +189,103 @@ export async function syncAPGVariant({
       level => level.location.id === locationId
     )?.id;
     
-    // Create inventory level if it doesn't exist
-    if (!inventoryLevelId) {
-      const createLevelResponse = await admin.graphql(`#graphql
-        mutation {
-          inventorySetOnHandQuantities(
-            input: {
-              reason: "correction"
-              setQuantities: [{
-                inventoryItemId: "${variant.inventoryItem.id}"
-                locationId: "${locationId}"
-                quantity: ${inventoryQty}
-              }]
-            }
-          ) {
-            userErrors { message field }
-            inventoryAdjustmentGroup {
-              createdAt
-              reason
-              changes {
-                name
-                delta
+      // Create inventory level if it doesn't exist
+      if (!inventoryLevelId) {
+        try {
+          const createLevelResponse = await admin.graphql(`#graphql
+            mutation {
+              inventorySetOnHandQuantities(
+                input: {
+                  reason: "correction"
+                  setQuantities: [{
+                    inventoryItemId: "${variant.inventoryItem.id}"
+                    locationId: "${locationId}"
+                    quantity: ${inventoryQty}
+                  }]
+                }
+              ) {
+                userErrors { message field }
+                inventoryAdjustmentGroup {
+                  createdAt
+                  reason
+                  changes {
+                    name
+                    delta
+                  }
+                }
               }
             }
+          `);
+          
+          const createLevelResult = await createLevelResponse.json();
+          if (createLevelResult.data?.inventorySetOnHandQuantities?.userErrors?.length > 0) {
+            const errors = createLevelResult.data.inventorySetOnHandQuantities.userErrors;
+            console.warn(`⚠️ Inventory level creation warning: ${errors.map(e => e.message).join(", ")}`);
+          } else {
+            console.log(`📦 Inventory set to ${inventoryQty} for ${variant.sku || variant.barcode}`);
+          }
+        } catch (createError) {
+          const errorMsg = createError.message || String(createError);
+          const isScopeError = errorMsg.includes("access") || errorMsg.includes("scope") || errorMsg.includes("permission") || errorMsg.includes("write_inventory");
+          if (isScopeError) {
+            console.warn(`⚠️ Inventory creation skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
+          } else {
+            console.warn(`⚠️ Inventory creation failed: ${errorMsg}`);
           }
         }
-      `);
-      
-      const createLevelResult = await createLevelResponse.json();
-      if (createLevelResult.data?.inventorySetOnHandQuantities?.userErrors?.length > 0) {
-        const errors = createLevelResult.data.inventorySetOnHandQuantities.userErrors;
-        console.warn(`⚠️ Inventory level creation warning: ${errors.map(e => e.message).join(", ")}`);
       } else {
-        console.log(`📦 Inventory set to ${inventoryQty} for ${variant.sku || variant.barcode}`);
-      }
-    } else {
-      // Update existing inventory level
-      const setInventoryResponse = await admin.graphql(`#graphql
-        mutation {
-          inventorySetOnHandQuantities(
-            input: {
-              reason: "correction"
-              setQuantities: [{
-                inventoryItemId: "${variant.inventoryItem.id}"
-                locationId: "${locationId}"
-                quantity: ${inventoryQty}
-              }]
-            }
-          ) {
-            userErrors { message field }
-            inventoryAdjustmentGroup {
-              createdAt
-              reason
-              changes {
-                name
-                delta
+        // Update existing inventory level
+        try {
+          const setInventoryResponse = await admin.graphql(`#graphql
+            mutation {
+              inventorySetOnHandQuantities(
+                input: {
+                  reason: "correction"
+                  setQuantities: [{
+                    inventoryItemId: "${variant.inventoryItem.id}"
+                    locationId: "${locationId}"
+                    quantity: ${inventoryQty}
+                  }]
+                }
+              ) {
+                userErrors { message field }
+                inventoryAdjustmentGroup {
+                  createdAt
+                  reason
+                  changes {
+                    name
+                    delta
+                  }
+                }
               }
             }
+          `);
+          
+          const setInventoryResult = await setInventoryResponse.json();
+          if (setInventoryResult.data?.inventorySetOnHandQuantities?.userErrors?.length > 0) {
+            const errors = setInventoryResult.data.inventorySetOnHandQuantities.userErrors;
+            console.warn(`⚠️ Inventory quantity update warning: ${errors.map(e => e.message).join(", ")}`);
+          } else {
+            console.log(`📦 Inventory updated to ${inventoryQty} for ${variant.sku || variant.barcode}`);
+          }
+        } catch (updateError) {
+          const errorMsg = updateError.message || String(updateError);
+          const isScopeError = errorMsg.includes("access") || errorMsg.includes("scope") || errorMsg.includes("permission") || errorMsg.includes("write_inventory");
+          if (isScopeError) {
+            console.warn(`⚠️ Inventory update skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
+          } else {
+            console.warn(`⚠️ Inventory update failed: ${errorMsg}`);
           }
         }
-      `);
-      
-      const setInventoryResult = await setInventoryResponse.json();
-      if (setInventoryResult.data?.inventorySetOnHandQuantities?.userErrors?.length > 0) {
-        const errors = setInventoryResult.data.inventorySetOnHandQuantities.userErrors;
-        console.warn(`⚠️ Inventory quantity update warning: ${errors.map(e => e.message).join(", ")}`);
-      } else {
-        console.log(`📦 Inventory updated to ${inventoryQty} for ${variant.sku || variant.barcode}`);
       }
     } catch (inventoryError) {
       // If inventory update fails (e.g., scope error), continue with cost update
-      const isScopeError = inventoryError.message?.includes("access") || inventoryError.message?.includes("scope") || inventoryError.message?.includes("permission");
+      const errorMsg = inventoryError.message || String(inventoryError);
+      const isScopeError = errorMsg.includes("access") || errorMsg.includes("scope") || errorMsg.includes("permission") || errorMsg.includes("write_inventory");
       if (isScopeError) {
         console.warn(`⚠️ Inventory update skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
       } else {
-        console.warn(`⚠️ Inventory update failed for ${variant.sku || variant.barcode}: ${inventoryError.message}`);
+        console.warn(`⚠️ Inventory update failed for ${variant.sku || variant.barcode}: ${errorMsg}`);
       }
     }
   }

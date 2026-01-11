@@ -62,7 +62,11 @@ export async function downloadAndExtractAPGFeed() {
     // Verify file exists and get size
     const stats = fs.statSync(csvPath);
     const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
-    console.log(`✅ APG CSV ready: ${csvPath} (${fileSizeMB} MB)`);
+    const fileSizeKB = (stats.size / 1024).toFixed(0);
+    console.log(`✅ APG CSV downloaded and verified:`);
+    console.log(`   📁 Path: ${csvPath}`);
+    console.log(`   📊 Size: ${fileSizeMB} MB (${fileSizeKB} KB)`);
+    console.log(`   ⚠️  Note: Railway filesystem is ephemeral - files are cleared on container restart`);
 
     return csvPath;
   } catch (err) {
@@ -121,16 +125,19 @@ async function readAPGCSVFromPath(csvPath) {
         results.push(processedRow);
       })
       .on("end", () => {
-        console.log(`✅ CSV parsed. Total rows: ${results.length}`);
-        if (results.length > 0) {
+        console.log(`✅ CSV parsed successfully. Total rows: ${results.length}`);
+        if (results.length === 0) {
+          console.warn("⚠️ WARNING: CSV file is empty or no data was parsed!");
+        } else {
           const sample = results[0];
-          console.log("📋 Sample CSV data:", {
+          console.log("📋 Sample CSV row data:", {
             UPC: sample.Upc || sample.upc || "N/A",
             MAP: sample.MAP || sample.map || "N/A",
             CustomerPrice: sample["Customer Price"] || sample["Customer Price (USD)"] || sample.Cost || "N/A",
             PartNumber: sample["Premier Part Number"] || sample.premierPartNumber || "N/A",
             Inventory: sample.inventory || sample["USA Item Availability"] || "N/A"
           });
+          console.log(`✅ CSV data loaded: ${results.length} products ready for sync`);
         }
         resolve(results);
       })
@@ -157,12 +164,18 @@ export async function getAPGIndex() {
     if (process.env.APG_FTP_HOST && process.env.APG_FTP_USERNAME && process.env.APG_FTP_PASSWORD) {
       try {
         console.log("📥 Attempting to download CSV from FTP...");
+        console.log(`   Host: ${process.env.APG_FTP_HOST}`);
+        console.log(`   User: ${process.env.APG_FTP_USERNAME}`);
+        console.log(`   File: ${process.env.APG_FTP_FILENAME || "premier_data_feed_master.zip"}`);
         const csvPath = await downloadAndExtractAPGFeed();
         csvData = await readAPGCSVFromPath(csvPath);
-        console.log(`✅ Loaded ${csvData.length} items from FTP CSV`);
+        console.log(`✅ Successfully loaded ${csvData.length} items from FTP CSV`);
       } catch (ftpError) {
-        console.warn("⚠️ FTP download failed, trying local CSV:", ftpError.message);
+        console.error("❌ FTP download failed:", ftpError.message);
+        console.warn("⚠️ Falling back to local CSV (if available)...");
       }
+    } else {
+      console.log("ℹ️  FTP credentials not configured, skipping FTP download");
     }
 
     // Priority 2: Try local CSV file (for development)
