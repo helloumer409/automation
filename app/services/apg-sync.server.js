@@ -54,15 +54,18 @@ export async function syncAPGVariant({
   variant,
   apgRow
 }) {
-  // Log the raw APG row data for debugging
-  console.log(`🔍 Syncing ${variant.sku || variant.barcode}:`, {
-    barcode: variant.barcode,
-    sku: variant.sku,
-    apgUpc: apgRow.Upc || apgRow.upc,
-    apgMap: apgRow.MAP || apgRow.map,
-    apgCustomerPrice: apgRow["Customer Price"] || apgRow["Customer Price (USD)"] || apgRow.Cost,
-    apgPartNumber: apgRow["Premier Part Number"]
-  });
+  // Only log detailed sync info for debugging (reduce log spam)
+  const DEBUG_SYNC = false; // Set to true for detailed logging
+  if (DEBUG_SYNC) {
+    console.log(`🔍 Syncing ${variant.sku || variant.barcode}:`, {
+      barcode: variant.barcode,
+      sku: variant.sku,
+      apgUpc: apgRow.Upc || apgRow.upc,
+      apgMap: apgRow.MAP || apgRow.map,
+      apgCustomerPrice: apgRow["Customer Price"] || apgRow["Customer Price (USD)"] || apgRow.Cost,
+      apgPartNumber: apgRow["Premier Part Number"]
+    });
+  }
 
   // Try multiple possible field names for MAP price and parse it
   const mapPriceStr = apgRow.MAP || apgRow.map || apgRow.priceMAP || apgRow["MAP Price"] || apgRow["MAP Price (USD)"];
@@ -77,18 +80,18 @@ export async function syncAPGVariant({
     return;
   }
 
-  console.log(`💰 Processing ${variant.sku || variant.barcode} - MAP: $${mapPrice.toFixed(2)}${costPrice ? `, Cost: $${costPrice.toFixed(2)}` : " (no cost)"}`);
+  // Log processing details (reduced frequency to avoid log spam)
+  // Commented out detailed logging - uncomment if needed for debugging
+  // console.log(`💰 Processing ${variant.sku || variant.barcode} - MAP: $${mapPrice.toFixed(2)}${costPrice ? `, Cost: $${costPrice.toFixed(2)}` : " (no cost)"}`);
   
-  // Verify barcode/UPC match for debugging
+  // Verify barcode/UPC match - only log mismatches
   const shopifyBarcode = String(variant.barcode || "").trim();
   const apgUpc = String(apgRow.Upc || apgRow.upc || "").trim();
   const shopifyBarcodeNorm = shopifyBarcode.replace(/^0+/, "");
   const apgUpcNorm = apgUpc.replace(/^0+/, "");
   
   if (shopifyBarcode && apgUpc && shopifyBarcodeNorm !== apgUpcNorm) {
-    console.warn(`⚠️ Potential barcode mismatch - Shopify: "${shopifyBarcode}" (normalized: "${shopifyBarcodeNorm}") vs APG: "${apgUpc}" (normalized: "${apgUpcNorm}")`);
-  } else if (shopifyBarcode && apgUpc) {
-    console.log(`✓ Barcode match confirmed: ${shopifyBarcodeNorm}`);
+    console.warn(`⚠️ Barcode mismatch - Shopify: "${shopifyBarcode}" vs APG: "${apgUpc}"`);
   }
 
   /* 1️⃣ PRICE */
@@ -305,30 +308,31 @@ export async function syncAPGVariant({
     }
   }
 
-  /* 3️⃣ COST - Must set after tracking is enabled */
+  /* 3️⃣ COST - Set cost using unitCost field (visible in product edit page) */
   if (costPrice && costPrice > 0) {
     // Wrap cost update in try-catch to not fail if scope is missing
     try {
-    // Ensure tracking is enabled before setting cost
-    const costResponse = await admin.graphql(`#graphql
-      mutation {
-        inventoryItemUpdate(
-          id: "${variant.inventoryItem.id}",
-          input: { 
-            tracked: true
-            cost: "${costPrice.toFixed(2)}" 
-          }
-        ) {
-          userErrors { message field }
-          inventoryItem {
-            id
-            cost
-            tracked
+      // Try setting cost via inventoryItemUpdate with unitCost field
+      // This makes cost visible in the product edit page under "Cost"
+      const costResponse = await admin.graphql(`#graphql
+        mutation {
+          inventoryItemUpdate(
+            id: "${variant.inventoryItem.id}",
+            input: { 
+              tracked: true
+              unitCost: "${costPrice.toFixed(2)}" 
+            }
+          ) {
+            userErrors { message field }
+            inventoryItem {
+              id
+              unitCost
+              tracked
+            }
           }
         }
-      }
-    `);
-    
+      `);
+      
       const costResult = await costResponse.json();
       if (costResult.data?.inventoryItemUpdate?.userErrors?.length > 0) {
         const errors = costResult.data.inventoryItemUpdate.userErrors;
@@ -336,17 +340,29 @@ export async function syncAPGVariant({
         if (isScopeError) {
           console.warn(`⚠️ Cost update skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
         } else {
-          console.warn(`⚠️ Cost update warning: ${errors.map(e => e.message).join(", ")}`);
+          // If unitCost doesn't work, try setting as metafield for visibility
+          console.warn(`⚠️ Cost field error, trying metafield approach: ${errors.map(e => e.message).join(", ")}`);
+          try {
+            await setCostAsMetafield(admin, variant.id, costPrice);
+          } catch (metaError) {
+            console.warn(`⚠️ Cost metafield also failed: ${metaError.message}`);
+          }
         }
-      } else if (costResult.data?.inventoryItemUpdate?.inventoryItem?.cost) {
-        console.log(`💰 Cost set to $${costPrice.toFixed(2)} for ${variant.sku || variant.barcode}`);
+      } else if (costResult.data?.inventoryItemUpdate?.inventoryItem?.unitCost) {
+        console.log(`💰 Cost set to $${costPrice.toFixed(2)} for ${variant.sku || variant.barcode} (visible in product edit page)`);
       }
     } catch (costError) {
-      const isScopeError = costError.message?.includes("access") || costError.message?.includes("scope") || costError.message?.includes("permission");
+      const errorMsg = costError.message || String(costError);
+      const isScopeError = errorMsg.includes("access") || errorMsg.includes("scope") || errorMsg.includes("permission") || errorMsg.includes("write_inventory");
       if (isScopeError) {
         console.warn(`⚠️ Cost update skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
       } else {
-        console.warn(`⚠️ Cost update failed: ${costError.message}`);
+        // Try metafield as fallback
+        try {
+          await setCostAsMetafield(admin, variant.id, costPrice);
+        } catch (metaError) {
+          console.warn(`⚠️ Cost update failed: ${errorMsg}`);
+        }
       }
     }
   } else {
@@ -356,6 +372,42 @@ export async function syncAPGVariant({
       "Cost": apgRow.Cost,
       "cost": apgRow.cost
     });
+  }
+}
+
+/**
+ * Sets cost as a metafield for visibility (fallback method)
+ */
+async function setCostAsMetafield(admin, variantId, costPrice) {
+  try {
+    const metafieldResponse = await admin.graphql(`#graphql
+      mutation {
+        metafieldsSet(metafields: [{
+          ownerId: "${variantId}"
+          namespace: "apg"
+          key: "cost"
+          value: "${costPrice.toFixed(2)}"
+          type: "money"
+        }]) {
+          metafields {
+            id
+            key
+            value
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `);
+    
+    const metafieldResult = await metafieldResponse.json();
+    if (metafieldResult.data?.metafieldsSet?.userErrors?.length === 0) {
+      console.log(`💰 Cost stored as metafield for variant ${variantId}`);
+    }
+  } catch (error) {
+    throw error;
   }
 
   console.log(`✅ Synced ${variant.sku || variant.barcode} - Price: $${mapPrice.toFixed(2)}, Inventory: ${inventoryQty}${warehouseTotal > 0 ? ` (NV:${nvWhse}+KY:${kyWhse}+MFG:${mfgInvt}+WA:${waWhse})` : ""}${costPrice > 0 ? `, Cost: $${costPrice.toFixed(2)}` : ""}`);

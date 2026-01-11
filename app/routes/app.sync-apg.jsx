@@ -16,9 +16,23 @@ export async function action({ request }) {
     let synced = 0;
     let skipped = 0;
     const errors = [];
+    
+    // Calculate total variants for progress tracking
+    const totalVariants = shopifyProducts.reduce((sum, p) => sum + (p.variants?.nodes?.length || 0), 0);
+    let processedVariants = 0;
+    const progressInterval = Math.max(1, Math.floor(totalVariants / 20)); // Log every 5%
+
+    console.log(`🚀 Starting sync for ${shopifyProducts.length} products (${totalVariants} variants)...`);
 
     for (const product of shopifyProducts) {
       for (const variant of product.variants.nodes) {
+        processedVariants++;
+        
+        // Log progress for large syncs
+        if (processedVariants % progressInterval === 0 || processedVariants === totalVariants) {
+          const progress = ((processedVariants / totalVariants) * 100).toFixed(1);
+          console.log(`📊 Progress: ${processedVariants}/${totalVariants} variants (${progress}%) - Synced: ${synced}, Skipped: ${skipped}`);
+        }
         if (!variant.barcode) {
           skipped++;
           continue;
@@ -54,11 +68,17 @@ export async function action({ request }) {
 
         if (!apgItem) {
           skipped++;
-          console.log(`⏭ No APG match for barcode: "${variant.barcode}" SKU: "${variant.sku}"`);
+          // Only log missing matches occasionally to reduce log spam
+          if (skipped % 100 === 0) {
+            console.log(`⏭ ${skipped} products skipped (no APG match)`);
+          }
           continue;
         }
         
-        console.log(`✓ Found APG match for ${variant.sku || variant.barcode}`);
+        // Only log matches occasionally to reduce log spam
+        if (synced % 50 === 0) {
+          console.log(`✓ Found APG match for ${variant.sku || variant.barcode} (${synced} synced so far)`);
+        }
 
         // Import sync function dynamically to avoid circular dependencies if any
         const { syncAPGVariant } = await import("../services/apg-sync.server");
