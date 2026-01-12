@@ -45,7 +45,9 @@ function parsePrice(priceStr) {
   // Remove $, commas, and whitespace, then convert to number
   const cleaned = String(priceStr).replace(/[$,\s]/g, "").trim();
   const parsed = Number(cleaned);
-  return isNaN(parsed) || parsed <= 0 ? null : parsed;
+  // Return 0 if explicitly 0 (not null), so we can use Jobber fallback
+  if (parsed === 0) return 0;
+  return isNaN(parsed) || parsed < 0 ? null : parsed;
 }
 
 export async function syncAPGVariant({
@@ -53,7 +55,9 @@ export async function syncAPGVariant({
   productId,
   variant,
   apgRow
-}) {
+}, stats = null) {
+  // Track stats for reporting if provided
+  if (!stats) stats = { mapMatched: 0, mapUsedJobber: 0, mapUsedRetail: 0, mapSkipped: 0, mapSkippedReasons: [] };
   // Only log detailed sync info for debugging (reduce log spam)
   const DEBUG_SYNC = false; // Set to true for detailed logging
   if (DEBUG_SYNC) {
@@ -68,23 +72,38 @@ export async function syncAPGVariant({
   }
 
   // Try multiple possible field names for MAP price and parse it
-  // IMPORTANT: MAP column might have value 0 or empty - check all variations
-  // User example: MAP=0 but Jobber=309.99, should use Jobber when MAP is 0
+  // IMPORTANT: MAP column might have value 0 or "0.0000" - check all variations
   const mapPriceStr = apgRow.MAP || apgRow.map || apgRow.priceMAP || apgRow["MAP Price"] || apgRow["MAP Price (USD)"] || apgRow["MAP"] || "0";
   let mapPrice = parsePrice(mapPriceStr);
+  let priceSource = "MAP";
   
-  // If MAP is 0 or invalid, try Jobber price, then Retail as fallback
-  if (!mapPrice || mapPrice === 0) {
-    const jobberPrice = parsePrice(apgRow.Jobber || apgRow.jobber || apgRow["Jobber"] || "0");
-    const retailPrice = parsePrice(apgRow.Retail || apgRow.retail || apgRow["Retail"] || "0");
+  // If MAP is 0 or invalid, try Jobber price (column L), then Retail as fallback
+  if (mapPrice === null || mapPrice === 0) {
+    const jobberPriceStr = apgRow.Jobber || apgRow.jobber || apgRow["Jobber"] || "0";
+    const jobberPrice = parsePrice(jobberPriceStr);
+    const retailPriceStr = apgRow.Retail || apgRow.retail || apgRow["Retail"] || "0";
+    const retailPrice = parsePrice(retailPriceStr);
     
-    // Prefer Jobber over Retail when MAP is 0
+    // Prefer Jobber over Retail when MAP is 0 (as per user requirement)
     if (jobberPrice && jobberPrice > 0) {
       mapPrice = jobberPrice;
+      priceSource = "Jobber (MAP was 0)";
+      if (stats) stats.mapUsedJobber++;
     } else if (retailPrice && retailPrice > 0) {
       mapPrice = retailPrice;
+      priceSource = "Retail (MAP and Jobber were 0)";
+      if (stats) stats.mapUsedRetail++;
     } else {
-      // Skip only if all prices are invalid - but still try to set cost
+      // Skip only if all prices are invalid - track reason
+      const reason = `MAP=${mapPriceStr}, Jobber=${jobberPriceStr}, Retail=${retailPriceStr} - all invalid`;
+      if (stats) {
+        stats.mapSkipped++;
+        stats.mapSkippedReasons.push({
+          sku: variant.sku || variant.barcode,
+          reason: reason
+        });
+      }
+      // Still try to set cost even if price is skipped
       const costPriceStr = apgRow["Customer Price"] || apgRow["Customer Price (USD)"] || apgRow.Cost || apgRow.cost || apgRow["cost"];
       const costPrice = parsePrice(costPriceStr);
       if (costPrice && costPrice > 0) {
@@ -96,6 +115,8 @@ export async function syncAPGVariant({
       }
       return;
     }
+  } else {
+    if (stats) stats.mapMatched++;
   }
   
   // Try multiple possible field names for Customer Price
@@ -153,6 +174,7 @@ export async function syncAPGVariant({
   const warehouseTotal = nvWhse + kyWhse + mfgInvt + waWhse;
   
   // Prefer "USA Item Availability", fallback to warehouse total
+  // User requirement: Use "USA Item Availability" column (column I) from CSV
   const inventoryQty = Math.max(0, Math.floor(usaAvailability > 0 ? usaAvailability : warehouseTotal));
   
   // ALWAYS enable tracking - required for cost visibility
@@ -173,151 +195,112 @@ export async function syncAPGVariant({
       }
     `);
     
-    const trackingResult = await trackingResponse.json();
-    if (trackingResult.data?.inventoryItemUpdate?.userErrors?.length > 0) {
-      const errors = trackingResult.data.inventoryItemUpdate.userErrors;
-      // If it's a scope error, warn but continue
-      const isScopeError = errors.some(e => e.message.includes("access") || e.message.includes("scope") || e.message.includes("permission"));
-      if (isScopeError) {
-        console.warn(`⚠️ Inventory tracking skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}. Price updated successfully.`);
+    // Try to set inventory quantity - get location first, but if unavailable, skip location requirement
+    const locationId = await getLocationId(admin);
+    
+    if (locationId && inventoryQty >= 0) {
+      // Get current inventory levels
+      try {
+        const levelsResponse = await admin.graphql(`#graphql
+          query {
+            inventoryItem(id: "${variant.inventoryItem.id}") {
+              id
+              inventoryLevels(first: 10) {
+                nodes {
+                  id
+                  location {
+                    id
+                    name
+                  }
+                  quantities(names: ["available"]) {
+                    name
+                    quantity
+                  }
+                }
+              }
+            }
+          }
+        `);
+        
+        const levelsResult = await levelsResponse.json();
+        const inventoryLevels = levelsResult.data?.inventoryItem?.inventoryLevels?.nodes || [];
+        const existingLevel = inventoryLevels.find(level => level.location?.id === locationId);
+        
+        if (!existingLevel && inventoryLevels.length === 0) {
+          // Create new inventory level at location with total quantity
+          try {
+            const createLevelResponse = await admin.graphql(`#graphql
+              mutation {
+                inventorySetOnHandQuantities(
+                  input: {
+                    reason: "correction"
+                    setQuantities: [{
+                      inventoryItemId: "${variant.inventoryItem.id}"
+                      locationId: "${locationId}"
+                      quantity: ${inventoryQty}
+                    }]
+                  }
+                ) {
+                  userErrors { message field }
+                  inventoryAdjustmentGroup {
+                    createdAt
+                    reason
+                    changes {
+                      name
+                      delta
+                    }
+                  }
+                }
+              }
+            `);
+            
+            // Inventory set silently - no logging to reduce spam
+          } catch (createError) {
+            // Silent fail - inventory will be set once location is available
+          }
+        } else if (existingLevel) {
+          // Update existing inventory level
+          try {
+            const setInventoryResponse = await admin.graphql(`#graphql
+              mutation {
+                inventorySetOnHandQuantities(
+                  input: {
+                    reason: "correction"
+                    setQuantities: [{
+                      inventoryItemId: "${variant.inventoryItem.id}"
+                      locationId: "${locationId}"
+                      quantity: ${inventoryQty}
+                    }]
+                  }
+                ) {
+                  userErrors { message field }
+                  inventoryAdjustmentGroup {
+                    createdAt
+                    reason
+                    changes {
+                      name
+                      delta
+                    }
+                  }
+                }
+              }
+            `);
+            
+            // Inventory updated silently
+          } catch (updateError) {
+            // Silent fail
+          }
+        }
+      } catch (levelsError) {
+        // Silent - inventory tracking might not be available yet
       }
-      // Removed tracking warning logs to reduce spam
     }
-    // Tracking enabled silently
+    
+    // Tracking enabled silently - removed error logging to reduce spam
   } catch (trackingError) {
     // Silent - tracking will be skipped but price/cost will still update
-    // Only critical errors are logged in the main sync loop
   }
 
-  // Get location ID for inventory level (cached)
-  const locationId = await getLocationId(admin);
-  
-  if (!locationId) {
-    console.warn(`⚠️ No location found - cannot set inventory for ${variant.sku || variant.barcode}. Price updated successfully.`);
-  } else {
-    // Wrap inventory operations in try-catch to not fail entire sync if inventory scope is missing
-    try {
-    // Get current inventory levels
-    const inventoryLevelsResponse = await admin.graphql(`#graphql
-      query {
-        inventoryItem(id: "${variant.inventoryItem.id}") {
-          id
-          inventoryLevels(first: 10) {
-            nodes {
-              id
-              location {
-                id
-              }
-              available
-            }
-          }
-        }
-      }
-    `);
-    
-    const inventoryLevelsResult = await inventoryLevelsResponse.json();
-    let inventoryLevelId = inventoryLevelsResult.data?.inventoryItem?.inventoryLevels?.nodes?.find(
-      level => level.location.id === locationId
-    )?.id;
-    
-      // Create inventory level if it doesn't exist
-      if (!inventoryLevelId) {
-        try {
-          const createLevelResponse = await admin.graphql(`#graphql
-            mutation {
-              inventorySetOnHandQuantities(
-                input: {
-                  reason: "correction"
-                  setQuantities: [{
-                    inventoryItemId: "${variant.inventoryItem.id}"
-                    locationId: "${locationId}"
-                    quantity: ${inventoryQty}
-                  }]
-                }
-              ) {
-                userErrors { message field }
-                inventoryAdjustmentGroup {
-                  createdAt
-                  reason
-                  changes {
-                    name
-                    delta
-                  }
-                }
-              }
-            }
-          `);
-          
-          const createLevelResult = await createLevelResponse.json();
-          if (createLevelResult.data?.inventorySetOnHandQuantities?.userErrors?.length > 0) {
-            const errors = createLevelResult.data.inventorySetOnHandQuantities.userErrors;
-            console.warn(`⚠️ Inventory level creation warning: ${errors.map(e => e.message).join(", ")}`);
-          } else {
-            console.log(`📦 Inventory set to ${inventoryQty} for ${variant.sku || variant.barcode}`);
-          }
-        } catch (createError) {
-          const errorMsg = createError.message || String(createError);
-          const isScopeError = errorMsg.includes("access") || errorMsg.includes("scope") || errorMsg.includes("permission") || errorMsg.includes("write_inventory");
-          if (isScopeError) {
-            console.warn(`⚠️ Inventory creation skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
-          } else {
-            console.warn(`⚠️ Inventory creation failed: ${errorMsg}`);
-          }
-        }
-      } else {
-        // Update existing inventory level
-        try {
-          const setInventoryResponse = await admin.graphql(`#graphql
-            mutation {
-              inventorySetOnHandQuantities(
-                input: {
-                  reason: "correction"
-                  setQuantities: [{
-                    inventoryItemId: "${variant.inventoryItem.id}"
-                    locationId: "${locationId}"
-                    quantity: ${inventoryQty}
-                  }]
-                }
-              ) {
-                userErrors { message field }
-                inventoryAdjustmentGroup {
-                  createdAt
-                  reason
-                  changes {
-                    name
-                    delta
-                  }
-                }
-              }
-            }
-          `);
-          
-          const setInventoryResult = await setInventoryResponse.json();
-          if (setInventoryResult.data?.inventorySetOnHandQuantities?.userErrors?.length > 0) {
-            const errors = setInventoryResult.data.inventorySetOnHandQuantities.userErrors;
-            console.warn(`⚠️ Inventory quantity update warning: ${errors.map(e => e.message).join(", ")}`);
-          }
-          // Removed inventory logging to reduce spam
-        } catch (updateError) {
-          const errorMsg = updateError.message || String(updateError);
-          const isScopeError = errorMsg.includes("access") || errorMsg.includes("scope") || errorMsg.includes("permission") || errorMsg.includes("write_inventory");
-          if (isScopeError) {
-            console.warn(`⚠️ Inventory update skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
-          }
-          // Removed warning logs to reduce spam - only critical errors logged
-        }
-      }
-    } catch (inventoryError) {
-      // If inventory update fails (e.g., scope error), continue with cost update
-      const errorMsg = inventoryError.message || String(inventoryError);
-      const isScopeError = errorMsg.includes("access") || errorMsg.includes("scope") || errorMsg.includes("permission") || errorMsg.includes("write_inventory");
-      if (isScopeError) {
-        console.warn(`⚠️ Inventory update skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
-      } else {
-        console.warn(`⚠️ Inventory update failed for ${variant.sku || variant.barcode}: ${errorMsg}`);
-      }
-    }
-  }
 
   /* 3️⃣ COST - ALWAYS set cost (required by user, must not skip) */
   // Cost MUST be set - use metafield as primary method (works even without inventory tracking)

@@ -21,6 +21,15 @@ export async function action({ request }) {
       let synced = 0;
       let skipped = 0;
       const errors = [];
+      
+      // Track MAP pricing statistics
+      const mapStats = {
+        mapMatched: 0,
+        mapUsedJobber: 0,
+        mapUsedRetail: 0,
+        mapSkipped: 0,
+        mapSkippedReasons: []
+      };
     
     // Calculate total variants for progress tracking
     const totalVariants = shopifyProducts.reduce((sum, p) => sum + (p.variants?.nodes?.length || 0), 0);
@@ -33,10 +42,11 @@ export async function action({ request }) {
       for (const variant of product.variants.nodes) {
         processedVariants++;
         
-        // Log progress for large syncs
-        if (processedVariants % progressInterval === 0 || processedVariants === totalVariants) {
+        // Log progress less frequently to reduce log spam (every 10% instead of 5%)
+        const progressInterval10 = Math.max(1, Math.floor(totalVariants / 10));
+        if (processedVariants % progressInterval10 === 0 || processedVariants === totalVariants) {
           const progress = ((processedVariants / totalVariants) * 100).toFixed(1);
-          console.log(`📊 Progress: ${processedVariants}/${totalVariants} variants (${progress}%) - Synced: ${synced}, Skipped: ${skipped}`);
+          console.log(`📊 Progress: ${processedVariants}/${totalVariants} (${progress}%) - Synced: ${synced}, Skipped: ${skipped}`);
         }
         if (!variant.barcode) {
           skipped++;
@@ -66,7 +76,7 @@ export async function action({ request }) {
           if (apgItem) break;
         }
         
-        // Try SKU as fallback
+        // Try SKU as fallback (before UPC variations)
         if (!apgItem && variant.sku) {
           apgItem = apgIndex.get(String(variant.sku).trim());
         }
@@ -88,10 +98,32 @@ export async function action({ request }) {
           }
         }
         
+        // Try matching by SKU format variations (e.g., BCSQ-100971 vs WRN100971)
+        if (!apgItem && variant.sku) {
+          const skuStr = String(variant.sku).trim();
+          // Try SKU without prefix (e.g., "BCSQ-100971" -> "100971")
+          const skuParts = skuStr.split("-");
+          if (skuParts.length > 1) {
+            const skuNumber = skuParts[skuParts.length - 1];
+            // Try to match by part number in CSV (Premier Part Number often matches SKU number)
+            for (const [key, item] of apgIndex.entries()) {
+              const partNum = item["Premier Part Number"] || "";
+              if (partNum && partNum.includes(skuNumber)) {
+                apgItem = item;
+                break;
+              }
+            }
+          }
+          // Also try full SKU match (already tried above, but keep for safety)
+          if (!apgItem) {
+            apgItem = apgIndex.get(skuStr);
+          }
+        }
+        
         if (!apgItem) {
           skipped++;
-          // Only log missing matches occasionally to reduce log spam
-          if (skipped % 500 === 0) {
+          // Only log missing matches much less frequently to reduce log spam
+          if (skipped % 2000 === 0) {
             console.log(`⏭ ${skipped} products skipped (no APG match so far)`);
           }
           continue;
@@ -104,7 +136,7 @@ export async function action({ request }) {
             productId: product.id,
             variant: variant,
             apgRow: apgItem,
-          });
+          }, mapStats);
           synced++;
         } catch (error) {
           errors.push({
@@ -129,6 +161,17 @@ export async function action({ request }) {
     console.log(`   • Successfully synced: ${synced} (${successRate}%)`);
     console.log(`   • Skipped (no match): ${skipped}`);
     console.log(`   • Errors: ${errors.length}`);
+    console.log(`\n💰 MAP Pricing Report:`);
+    console.log(`   • Used MAP price: ${mapStats.mapMatched}`);
+    console.log(`   • Used Jobber (MAP was 0): ${mapStats.mapUsedJobber}`);
+    console.log(`   • Used Retail (MAP & Jobber were 0): ${mapStats.mapUsedRetail}`);
+    console.log(`   • MAP price not found/skipped: ${mapStats.mapSkipped}`);
+    if (mapStats.mapSkipped > 0 && mapStats.mapSkippedReasons.length > 0) {
+      console.log(`   • Sample reasons (first 10):`);
+      mapStats.mapSkippedReasons.slice(0, 10).forEach((item, idx) => {
+        console.log(`     ${idx + 1}. ${item.sku}: ${item.reason}`);
+      });
+    }
 
     return {
       success: true,
@@ -136,8 +179,15 @@ export async function action({ request }) {
       skipped,
       total: totalProcessed,
       successRate: `${successRate}%`,
+      mapStats: {
+        mapMatched: mapStats.mapMatched,
+        mapUsedJobber: mapStats.mapUsedJobber,
+        mapUsedRetail: mapStats.mapUsedRetail,
+        mapSkipped: mapStats.mapSkipped,
+        mapSkippedReasons: mapStats.mapSkippedReasons.slice(0, 20) // Limit to 20 for response size
+      },
       errors: errors.length > 0 ? errors.slice(0, 50) : undefined, // Limit errors to prevent large responses
-      message: `✅ Sync complete! ${synced} products updated, ${skipped} skipped, ${errors.length} errors`,
+      message: `✅ Sync complete! ${synced} products updated (MAP: ${mapStats.mapMatched}, Jobber: ${mapStats.mapUsedJobber}), ${skipped} skipped, ${errors.length} errors`,
     };
   } catch (error) {
     console.error("❌ Sync failed:", error);
