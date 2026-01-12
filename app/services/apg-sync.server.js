@@ -88,10 +88,42 @@ export async function syncAPGVariant({
   
   // CRITICAL: If MAP is 0, null, or invalid, ALWAYS try Jobber price (column L)
   // This is a hard requirement - never skip products when MAP is 0 if Jobber exists
-  if (mapPrice === null || mapPrice === 0 || !mapPrice) {
-    const jobberPriceStr = apgRow.Jobber || apgRow.jobber || apgRow["Jobber"] || apgRow["Jobber Price"] || "0";
+  // Check explicitly for null or 0 (don't use !mapPrice as 0 is falsy)
+  if (mapPrice === null || mapPrice === 0) {
+    // Try ALL possible Jobber field names from CSV - check every variation
+    let jobberPriceStr = null;
+    
+    // First try exact matches
+    if (apgRow.Jobber) jobberPriceStr = apgRow.Jobber;
+    else if (apgRow.jobber) jobberPriceStr = apgRow.jobber;
+    else if (apgRow["Jobber"]) jobberPriceStr = apgRow["Jobber"];
+    else if (apgRow["Jobber Price"]) jobberPriceStr = apgRow["Jobber Price"];
+    else if (apgRow["jobber price"]) jobberPriceStr = apgRow["jobber price"];
+    else if (apgRow.JOBBER) jobberPriceStr = apgRow.JOBBER;
+    
+    // If not found, search case-insensitively for any field containing "jobber"
+    if (!jobberPriceStr) {
+      const jobberKey = Object.keys(apgRow).find(key => key.toLowerCase().includes("jobber"));
+      if (jobberKey) {
+        jobberPriceStr = apgRow[jobberKey];
+      }
+    }
+    
+    // Default to "0" if not found
+    jobberPriceStr = jobberPriceStr || "0";
     const jobberPrice = parsePrice(jobberPriceStr);
-    const retailPriceStr = apgRow.Retail || apgRow.retail || apgRow["Retail"] || apgRow["Retail Price"] || "0";
+    
+    // Try ALL possible Retail field names
+    let retailPriceStr = null;
+    if (apgRow.Retail) retailPriceStr = apgRow.Retail;
+    else if (apgRow.retail) retailPriceStr = apgRow.retail;
+    else if (apgRow["Retail"]) retailPriceStr = apgRow["Retail"];
+    else if (apgRow["Retail Price"]) retailPriceStr = apgRow["Retail Price"];
+    else {
+      const retailKey = Object.keys(apgRow).find(key => key.toLowerCase().includes("retail"));
+      if (retailKey) retailPriceStr = apgRow[retailKey];
+    }
+    retailPriceStr = retailPriceStr || "0";
     const retailPrice = parsePrice(retailPriceStr);
     
     // Prefer Jobber over Retail when MAP is 0 (MANDATORY - user requirement)
@@ -105,6 +137,15 @@ export async function syncAPGVariant({
       if (stats) stats.mapUsedRetail++;
     } else {
       // ONLY skip if ALL prices (MAP, Jobber, Retail) are invalid or 0
+      // Log first few for debugging to see what fields are actually in CSV
+      const skippedCount = stats ? stats.mapSkipped : 0;
+      if (skippedCount < 5) {
+        // Log sample CSV row structure to debug field names
+        const sampleKeys = Object.keys(apgRow).slice(0, 20);
+        console.log(`🔍 DEBUG: ${variant.sku || variant.barcode} - CSV fields found: ${sampleKeys.join(", ")}`);
+        console.log(`🔍 DEBUG: MAP="${mapPriceStr}", Jobber="${jobberPriceStr}", Retail="${retailPriceStr}"`);
+      }
+      
       // Track reason for reporting
       const reason = `MAP=${mapPriceStr || "null"}, Jobber=${jobberPriceStr || "null"}, Retail=${retailPriceStr || "null"} - all invalid or zero`;
       if (stats) {
