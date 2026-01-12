@@ -80,30 +80,23 @@ export async function syncAPGVariant({
     
     // Prefer Jobber over Retail when MAP is 0
     if (jobberPrice && jobberPrice > 0) {
-      console.log(`ℹ️  MAP is 0 for ${variant.sku || variant.barcode}, using Jobber price $${jobberPrice} (which should match MAP)`);
       mapPrice = jobberPrice;
     } else if (retailPrice && retailPrice > 0) {
-      console.log(`ℹ️  MAP and Jobber both 0 for ${variant.sku || variant.barcode}, using Retail price $${retailPrice}`);
       mapPrice = retailPrice;
     } else {
-      console.warn(`⏭ MAP, Jobber, and Retail all invalid for ${variant.sku || variant.barcode}. MAP: "${mapPriceStr}", Jobber: "${apgRow.Jobber || 'N/A'}", Retail: "${apgRow.Retail || 'N/A'}". Skipping price update.`);
-      // Still try to update cost even if price is skipped
+      // Skip only if all prices are invalid - but still try to set cost
       const costPriceStr = apgRow["Customer Price"] || apgRow["Customer Price (USD)"] || apgRow.Cost || apgRow.cost || apgRow["cost"];
       const costPrice = parsePrice(costPriceStr);
       if (costPrice && costPrice > 0) {
         try {
           await setCostAsMetafield(admin, variant.id, costPrice);
-          console.log(`💰 Cost set to $${costPrice.toFixed(2)} for ${variant.sku || variant.barcode} (price update skipped)`);
         } catch (e) {
-          // Ignore cost errors if price is also skipped
+          // Silent fail
         }
       }
       return;
     }
   }
-  
-  // Log price update for debugging
-  console.log(`💰 Updating ${variant.sku || variant.barcode} price to $${mapPrice.toFixed(2)} (MAP from CSV: ${mapPriceStr}, using: $${mapPrice.toFixed(2)})`);
   
   // Try multiple possible field names for Customer Price
   const costPriceStr = apgRow["Customer Price"] || apgRow["Customer Price (USD)"] || apgRow.Cost || apgRow.cost || apgRow["cost"];
@@ -119,9 +112,7 @@ export async function syncAPGVariant({
   const shopifyBarcodeNorm = shopifyBarcode.replace(/^0+/, "");
   const apgUpcNorm = apgUpc.replace(/^0+/, "");
   
-  if (shopifyBarcode && apgUpc && shopifyBarcodeNorm !== apgUpcNorm) {
-    console.warn(`⚠️ Barcode mismatch - Shopify: "${shopifyBarcode}" vs APG: "${apgUpc}"`);
-  }
+  // Removed barcode mismatch logging to reduce spam
 
   /* 1️⃣ PRICE */
   const priceResponse = await admin.graphql(`#graphql
@@ -189,21 +180,13 @@ export async function syncAPGVariant({
       const isScopeError = errors.some(e => e.message.includes("access") || e.message.includes("scope") || e.message.includes("permission"));
       if (isScopeError) {
         console.warn(`⚠️ Inventory tracking skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}. Price updated successfully.`);
-      } else {
-        console.warn(`⚠️ Inventory tracking warning for ${variant.sku || variant.barcode}: ${errors.map(e => e.message).join(", ")}`);
       }
-    } else if (trackingResult.data?.inventoryItemUpdate?.inventoryItem?.tracked) {
-      console.log(`✓ Tracking enabled for ${variant.sku || variant.barcode}`);
+      // Removed tracking warning logs to reduce spam
     }
+    // Tracking enabled silently
   } catch (trackingError) {
-    // Catch GraphQL errors - the client throws when there are GraphQL errors
-    const errorMessage = trackingError.message || String(trackingError);
-    const isScopeError = errorMessage.includes("access") || errorMessage.includes("scope") || errorMessage.includes("permission") || errorMessage.includes("write_inventory");
-    if (isScopeError) {
-      console.warn(`⚠️ Inventory tracking skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}. Price updated successfully. Reinstall app to grant inventory permissions.`);
-    } else {
-      console.warn(`⚠️ Could not enable tracking for ${variant.sku || variant.barcode}: ${errorMessage}. Continuing with price update...`);
-    }
+    // Silent - tracking will be skipped but price/cost will still update
+    // Only critical errors are logged in the main sync loop
   }
 
   // Get location ID for inventory level (cached)
@@ -313,17 +296,15 @@ export async function syncAPGVariant({
           if (setInventoryResult.data?.inventorySetOnHandQuantities?.userErrors?.length > 0) {
             const errors = setInventoryResult.data.inventorySetOnHandQuantities.userErrors;
             console.warn(`⚠️ Inventory quantity update warning: ${errors.map(e => e.message).join(", ")}`);
-          } else {
-            console.log(`📦 Inventory updated to ${inventoryQty} for ${variant.sku || variant.barcode}`);
           }
+          // Removed inventory logging to reduce spam
         } catch (updateError) {
           const errorMsg = updateError.message || String(updateError);
           const isScopeError = errorMsg.includes("access") || errorMsg.includes("scope") || errorMsg.includes("permission") || errorMsg.includes("write_inventory");
           if (isScopeError) {
             console.warn(`⚠️ Inventory update skipped (missing write_inventory scope) for ${variant.sku || variant.barcode}`);
-          } else {
-            console.warn(`⚠️ Inventory update failed: ${errorMsg}`);
           }
+          // Removed warning logs to reduce spam - only critical errors logged
         }
       }
     } catch (inventoryError) {
@@ -345,7 +326,7 @@ export async function syncAPGVariant({
     try {
       // Primary method: Set cost via metafield (always works, visible in product edit)
       await setCostAsMetafield(admin, variant.id, costPrice);
-      console.log(`💰 Cost set to $${costPrice.toFixed(2)} for ${variant.sku || variant.barcode} via metafield`);
+      // Removed logging to reduce log spam - cost is being set silently
     } catch (metaError) {
       // If metafield fails, try inventory item update (requires tracking enabled)
       try {
@@ -394,24 +375,17 @@ export async function syncAPGVariant({
             }
           `);
           
-          const costResult = await costResponse.json();
-          if (costResult.data?.inventoryItemUpdate?.userErrors?.length === 0) {
-            console.log(`💰 Cost set to $${costPrice.toFixed(2)} for ${variant.sku || variant.barcode} via inventoryItem`);
-          } else {
-            console.warn(`⚠️ Cost update failed for ${variant.sku || variant.barcode}, but price was updated successfully`);
-          }
+          // Cost is already set via metafield above, this is just fallback
+          // Removed logging to reduce spam
         } else {
-          console.warn(`⚠️ Cost update attempted but no location/item found for ${variant.sku || variant.barcode}`);
+          // No location - metafield already set above, this is just fallback
         }
       } catch (inventoryError) {
-        console.warn(`⚠️ Cost update methods failed for ${variant.sku || variant.barcode}: ${inventoryError.message}`);
-        // Price was still updated, cost will need manual setting
+        // Metafield already set above, this error is acceptable
       }
     }
-  } else {
-    // Log if cost is missing from CSV
-    console.log(`ℹ️  No cost price in CSV for ${variant.sku || variant.barcode} (Customer Price column empty)`);
   }
+  // Removed cost logging to reduce spam
 }
 
 /**

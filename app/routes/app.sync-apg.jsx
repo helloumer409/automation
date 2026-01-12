@@ -1,7 +1,7 @@
 import { authenticate } from "../shopify.server";
 import { getAPGIndex } from "../services/apg-lookup.server";
 import { getShopifyProducts } from "../services/shopify-products.server";
-import { clearLocationCache } from "../services/apg-sync.server";
+import { syncAPGVariant, clearLocationCache } from "../services/apg-sync.server";
 
 export async function action({ request }) {
   const { admin } = await authenticate.admin(request);
@@ -71,23 +71,33 @@ export async function action({ request }) {
           apgItem = apgIndex.get(String(variant.sku).trim());
         }
 
+        // Try matching by UPC variations if SKU/barcode didn't match
+        if (!apgItem && variant.barcode) {
+          // More aggressive UPC matching - try removing ALL leading zeros, try with different lengths
+          const barcodeClean = String(variant.barcode).replace(/^0+/g, "");
+          const variations = [
+            barcodeClean,
+            barcodeClean.padStart(11, "0"),
+            barcodeClean.padStart(12, "0"),
+            barcodeClean.padStart(13, "0"),
+            barcodeClean.padStart(14, "0"),
+          ];
+          for (const variation of variations) {
+            apgItem = apgIndex.get(variation);
+            if (apgItem) break;
+          }
+        }
+        
         if (!apgItem) {
           skipped++;
           // Only log missing matches occasionally to reduce log spam
-          if (skipped % 100 === 0) {
-            console.log(`⏭ ${skipped} products skipped (no APG match)`);
+          if (skipped % 500 === 0) {
+            console.log(`⏭ ${skipped} products skipped (no APG match so far)`);
           }
           continue;
         }
         
-        // Only log matches occasionally to reduce log spam
-        if (synced % 50 === 0) {
-          console.log(`✓ Found APG match for ${variant.sku || variant.barcode} (${synced} synced so far)`);
-        }
-
-        // Import sync function dynamically to avoid circular dependencies if any
-        const { syncAPGVariant } = await import("../services/apg-sync.server");
-        
+        // Sync the variant - use static import to preserve admin context
         try {
           await syncAPGVariant({
             admin,
@@ -102,19 +112,32 @@ export async function action({ request }) {
             variant: variant.sku || variant.barcode,
             error: error.message
           });
-          console.error("❌ Sync error:", error);
+          // Only log critical errors, not every sync error (reduces log spam)
+          if (errors.length <= 10 || errors.length % 100 === 0) {
+            console.error(`❌ Sync error for ${variant.sku || variant.barcode}: ${error.message}`);
+          }
         }
       }
     }
 
-    console.log(`\n📊 Sync Summary: ${synced} synced, ${skipped} skipped${errors.length > 0 ? `, ${errors.length} errors` : ""}`);
+    const totalProcessed = synced + skipped;
+    const successRate = totalProcessed > 0 ? ((synced / totalProcessed) * 100).toFixed(1) : 0;
+    
+    console.log(`\n✅ SYNC COMPLETE`);
+    console.log(`📊 Summary:`);
+    console.log(`   • Total variants processed: ${totalProcessed}`);
+    console.log(`   • Successfully synced: ${synced} (${successRate}%)`);
+    console.log(`   • Skipped (no match): ${skipped}`);
+    console.log(`   • Errors: ${errors.length}`);
 
     return {
       success: true,
       synced,
       skipped,
-      errors: errors.length > 0 ? errors : undefined,
-      message: `Synced ${synced} products, skipped ${skipped}${errors.length > 0 ? `, ${errors.length} errors` : ""}`,
+      total: totalProcessed,
+      successRate: `${successRate}%`,
+      errors: errors.length > 0 ? errors.slice(0, 50) : undefined, // Limit errors to prevent large responses
+      message: `✅ Sync complete! ${synced} products updated, ${skipped} skipped, ${errors.length} errors`,
     };
   } catch (error) {
     console.error("❌ Sync failed:", error);
