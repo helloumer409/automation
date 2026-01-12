@@ -41,9 +41,13 @@ export function clearLocationCache() {
  * Parses price string, removing currency symbols and formatting
  */
 function parsePrice(priceStr) {
-  if (!priceStr) return null;
-  // Remove $, commas, and whitespace, then convert to number
+  if (!priceStr && priceStr !== 0 && priceStr !== "0") return null;
+  // Handle string "0", "0.0000", "0.00", etc. as valid zero
   const cleaned = String(priceStr).replace(/[$,\s]/g, "").trim();
+  // If cleaned string is just zeros (with optional decimal), return 0
+  if (/^0+\.?0*$/.test(cleaned)) {
+    return 0; // Return 0 (not null) so we can trigger Jobber fallback
+  }
   const parsed = Number(cleaned);
   // Return 0 if explicitly 0 (not null), so we can use Jobber fallback
   if (parsed === 0) return 0;
@@ -56,6 +60,11 @@ export async function syncAPGVariant({
   variant,
   apgRow
 }, stats = null) {
+  // Validate admin context - if missing, throw error early
+  if (!admin || !admin.graphql) {
+    throw new Error("Admin context is missing - cannot sync variant");
+  }
+  
   // Track stats for reporting if provided
   if (!stats) stats = { mapMatched: 0, mapUsedJobber: 0, mapUsedRetail: 0, mapSkipped: 0, mapSkippedReasons: [] };
   // Only log detailed sync info for debugging (reduce log spam)
@@ -77,14 +86,15 @@ export async function syncAPGVariant({
   let mapPrice = parsePrice(mapPriceStr);
   let priceSource = "MAP";
   
-  // If MAP is 0 or invalid, try Jobber price (column L), then Retail as fallback
-  if (mapPrice === null || mapPrice === 0) {
-    const jobberPriceStr = apgRow.Jobber || apgRow.jobber || apgRow["Jobber"] || "0";
+  // CRITICAL: If MAP is 0, null, or invalid, ALWAYS try Jobber price (column L)
+  // This is a hard requirement - never skip products when MAP is 0 if Jobber exists
+  if (mapPrice === null || mapPrice === 0 || !mapPrice) {
+    const jobberPriceStr = apgRow.Jobber || apgRow.jobber || apgRow["Jobber"] || apgRow["Jobber Price"] || "0";
     const jobberPrice = parsePrice(jobberPriceStr);
-    const retailPriceStr = apgRow.Retail || apgRow.retail || apgRow["Retail"] || "0";
+    const retailPriceStr = apgRow.Retail || apgRow.retail || apgRow["Retail"] || apgRow["Retail Price"] || "0";
     const retailPrice = parsePrice(retailPriceStr);
     
-    // Prefer Jobber over Retail when MAP is 0 (as per user requirement)
+    // Prefer Jobber over Retail when MAP is 0 (MANDATORY - user requirement)
     if (jobberPrice && jobberPrice > 0) {
       mapPrice = jobberPrice;
       priceSource = "Jobber (MAP was 0)";
@@ -94,8 +104,9 @@ export async function syncAPGVariant({
       priceSource = "Retail (MAP and Jobber were 0)";
       if (stats) stats.mapUsedRetail++;
     } else {
-      // Skip only if all prices are invalid - track reason
-      const reason = `MAP=${mapPriceStr}, Jobber=${jobberPriceStr}, Retail=${retailPriceStr} - all invalid`;
+      // ONLY skip if ALL prices (MAP, Jobber, Retail) are invalid or 0
+      // Track reason for reporting
+      const reason = `MAP=${mapPriceStr || "null"}, Jobber=${jobberPriceStr || "null"}, Retail=${retailPriceStr || "null"} - all invalid or zero`;
       if (stats) {
         stats.mapSkipped++;
         stats.mapSkippedReasons.push({
@@ -113,10 +124,26 @@ export async function syncAPGVariant({
           // Silent fail
         }
       }
+      // Return early only if NO valid price found (MAP, Jobber, Retail all invalid)
       return;
     }
   } else {
+    // MAP price is valid and > 0
     if (stats) stats.mapMatched++;
+  }
+  
+  // At this point, mapPrice MUST be valid (> 0) - either from MAP or Jobber/Retail fallback
+  // If mapPrice is still null/0 here, something went wrong with parsing
+  if (!mapPrice || mapPrice <= 0) {
+    // This should never happen, but just in case, try one more time
+    const emergencyJobber = parsePrice(apgRow.Jobber || apgRow.jobber || "0");
+    if (emergencyJobber && emergencyJobber > 0) {
+      mapPrice = emergencyJobber;
+      if (stats) stats.mapUsedJobber++;
+    } else {
+      // Truly no price available - skip this variant
+      return;
+    }
   }
   
   // Try multiple possible field names for Customer Price
@@ -135,7 +162,12 @@ export async function syncAPGVariant({
   
   // Removed barcode mismatch logging to reduce spam
 
-  /* 1️⃣ PRICE */
+  /* 1️⃣ PRICE - Always update price (MAP or Jobber fallback) */
+  // Ensure admin context is still valid
+  if (!admin || !admin.graphql) {
+    throw new Error("Admin context lost during sync");
+  }
+  
   const priceResponse = await admin.graphql(`#graphql
     mutation {
       productVariantsBulkUpdate(
@@ -315,8 +347,7 @@ export async function syncAPGVariant({
       try {
         const locationId = await getLocationId(admin);
         if (locationId && variant.inventoryItem?.id) {
-          // Try setting cost via inventoryAdjustQuantitySet (without unitCost field)
-          // This will set quantity, and cost might be set via inventory item separately
+          // Try setting quantity (cost is already set via metafield above)
           const costResponse = await admin.graphql(`#graphql
             mutation {
               inventoryAdjustQuantitySet(
