@@ -34,3 +34,24 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+model SyncStats {
+  id              String   @id @default(cuid())
+  shop            String
+  syncStartedAt   DateTime @default(now())
+  syncCompletedAt DateTime?
+  totalProducts   Int      @default(0)
+  totalVariants   Int      @default(0)
+  synced          Int      @default(0)
+  skipped         Int      @default(0)
+  errors          Int      @default(0)
+  successRate     Float?
+  mapMatched      Int      @default(0)
+  mapUsedJobber   Int      @default(0)
+  mapUsedRetail   Int      @default(0)
+  mapSkipped      Int      @default(0)
+  status          String   @default("running") // "running", "completed", "failed"
+  errorMessage    String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}

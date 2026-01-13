@@ -1,14 +1,27 @@
-import { useEffect } from "react";
-import { useFetcher } from "react-router";
+import { useEffect, useState } from "react";
+import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+import { getLatestSyncStats } from "../services/sync-stats.server";
 
 
 export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
+  const shop = session.shop;
+  
+  // Get latest sync stats
+  const latestStats = await getLatestSyncStats(shop);
+  
+  // Check if auto-sync is enabled
+  const autoSyncEnabled = process.env.AUTO_SYNC_SCHEDULE ? true : false;
+  const autoSyncSchedule = process.env.AUTO_SYNC_SCHEDULE || "Not configured";
 
-  return null;
+  return {
+    latestStats,
+    autoSyncEnabled,
+    autoSyncSchedule,
+  };
 };
 
 export const action = async ({ request }) => {
@@ -77,26 +90,162 @@ export const action = async ({ request }) => {
 };
 
 export default function Index() {
+  const { latestStats, autoSyncEnabled, autoSyncSchedule } = useLoaderData();
   const fetcher = useFetcher();
+  const syncFetcher = useFetcher();
   const shopify = useAppBridge();
   const isLoading =
     ["loading", "submitting"].includes(fetcher.state) &&
     fetcher.formMethod === "POST";
+  const isSyncing = ["loading", "submitting"].includes(syncFetcher.state) &&
+    syncFetcher.formMethod === "POST";
 
   useEffect(() => {
     if (fetcher.data?.product?.id) {
       shopify.toast.show("Product created");
     }
   }, [fetcher.data?.product?.id, shopify]);
+
+  useEffect(() => {
+    if (syncFetcher.data?.success) {
+      shopify.toast.show(syncFetcher.data.message || "Sync completed successfully!");
+    } else if (syncFetcher.data?.error) {
+      shopify.toast.show(`Sync failed: ${syncFetcher.data.error}`, { isError: true });
+    }
+  }, [syncFetcher.data, shopify]);
+
   const generateProduct = () => fetcher.submit({}, { method: "POST" });
+  const startSync = () => syncFetcher.submit({}, { method: "post", action: "/app/sync-apg" });
+
+  // Display sync stats from latest sync or current sync
+  const displayStats = syncFetcher.data || latestStats;
+  const lastSyncTime = latestStats?.syncCompletedAt 
+    ? new Date(latestStats.syncCompletedAt).toLocaleString()
+    : "Never";
 
   return (
 <s-page heading="CPG Automation Manager">
+  
+  {/* Sync Statistics Section */}
+  <s-section heading="📊 Sync Statistics">
+    {displayStats && (
+      <s-stack direction="block" gap="base">
+        <s-grid columns="4">
+          <s-grid-item>
+            <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+              <s-text variant="headingMd">Total Synced</s-text>
+              <s-text variant="headingLg">{displayStats.synced || 0}</s-text>
+              {displayStats.total && (
+                <s-text variant="bodySm" tone="subdued">of {displayStats.total} variants</s-text>
+              )}
+            </s-box>
+          </s-grid-item>
+          
+          <s-grid-item>
+            <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+              <s-text variant="headingMd">Skipped</s-text>
+              <s-text variant="headingLg">{displayStats.skipped || 0}</s-text>
+              <s-text variant="bodySm" tone="subdued">No APG match</s-text>
+            </s-box>
+          </s-grid-item>
+          
+          <s-grid-item>
+            <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+              <s-text variant="headingMd">Errors</s-text>
+              <s-text variant="headingLg" tone={displayStats.errors > 0 ? "critical" : "success"}>
+                {displayStats.errors || 0}
+              </s-text>
+            </s-box>
+          </s-grid-item>
+          
+          <s-grid-item>
+            <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+              <s-text variant="headingMd">Success Rate</s-text>
+              <s-text variant="headingLg">{displayStats.successRate || "0%"}</s-text>
+            </s-box>
+          </s-grid-item>
+        </s-grid>
+
+        {displayStats.mapStats && (
+          <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+            <s-heading>💰 MAP Pricing Breakdown</s-heading>
+            <s-grid columns="4">
+              <s-grid-item>
+                <s-text variant="bodyMd"><strong>MAP Matched:</strong> {displayStats.mapStats.mapMatched || 0}</s-text>
+              </s-grid-item>
+              <s-grid-item>
+                <s-text variant="bodyMd"><strong>Used Jobber:</strong> {displayStats.mapStats.mapUsedJobber || 0}</s-text>
+              </s-grid-item>
+              <s-grid-item>
+                <s-text variant="bodyMd"><strong>Used Retail:</strong> {displayStats.mapStats.mapUsedRetail || 0}</s-text>
+              </s-grid-item>
+              <s-grid-item>
+                <s-text variant="bodyMd" tone={displayStats.mapStats.mapSkipped > 0 ? "warning" : "success"}>
+                  <strong>MAP Skipped:</strong> {displayStats.mapStats.mapSkipped || 0}
+                </s-text>
+              </s-grid-item>
+            </s-grid>
+          </s-box>
+        )}
+
+        <s-text variant="bodySm" tone="subdued">
+          Last sync: {lastSyncTime}
+        </s-text>
+      </s-stack>
+    )}
+    
+    {!displayStats && (
+      <s-text tone="subdued">No sync statistics available yet. Run your first sync to see stats.</s-text>
+    )}
+  </s-section>
+
+  {/* Automation Status */}
+  <s-section heading="🤖 Automation Status">
+    <s-box padding="base" borderWidth="base" borderRadius="base" background={autoSyncEnabled ? "success-subdued" : "warning-subdued"}>
+      <s-stack direction="block" gap="base">
+        <s-text variant="bodyMd">
+          <strong>Auto-sync:</strong> {autoSyncEnabled ? "✅ Enabled" : "⚠️ Disabled"}
+        </s-text>
+        <s-text variant="bodySm" tone="subdued">
+          Schedule: {autoSyncSchedule}
+        </s-text>
+        {!autoSyncEnabled && (
+          <s-text variant="bodySm" tone="subdued">
+            To enable automatic syncing, set AUTO_SYNC_SCHEDULE environment variable (e.g., "0 */6 * * *" for every 6 hours)
+          </s-text>
+        )}
+      </s-stack>
+    </s-box>
+  </s-section>
+
+  {/* Sync Actions */}
+  <s-section heading="🔄 Manual Sync">
+    <s-stack direction="inline" gap="base">
+      <s-button
+        variant="primary"
+        onClick={startSync}
+        loading={isSyncing}
+        disabled={isSyncing}
+      >
+        {isSyncing ? "Syncing..." : "Sync APG Inventory & Pricing"}
+      </s-button>
+    </s-stack>
+    {isSyncing && (
+      <s-text variant="bodySm" tone="subdued">
+        Sync in progress... This may take several minutes for large catalogs. Do not close this page.
+      </s-text>
+    )}
+  </s-section>
+
 <s-button
-  variant="primary"
-  onClick={() => fetcher.submit({}, { method: "post", action: "/app/sync-apg" })}
+  variant="secondary"
+  onClick={() => {
+    if (confirm("Are you sure you want to remove all compareAtPrice from all products? This cannot be undone.")) {
+      fetcher.submit({}, { method: "post", action: "/app/remove-compare-price" });
+    }
+  }}
 >
-  Sync APG Inventory & Pricing
+  Remove All Compare At Prices
 </s-button>
 
 <s-button
