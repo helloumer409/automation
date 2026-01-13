@@ -93,6 +93,7 @@ export default function Index() {
   const { latestStats, autoSyncEnabled, autoSyncSchedule } = useLoaderData();
   const fetcher = useFetcher();
   const syncFetcher = useFetcher();
+  const retryFetcher = useFetcher();
   const shopify = useAppBridge();
   const isLoading =
     ["loading", "submitting"].includes(fetcher.state) &&
@@ -114,11 +115,21 @@ export default function Index() {
     }
   }, [syncFetcher.data, shopify]);
 
+  useEffect(() => {
+    if (retryFetcher.data?.success) {
+      shopify.toast.show(retryFetcher.data.message || "Retry completed successfully!");
+      // Refresh page to update stats
+      setTimeout(() => window.location.reload(), 2000);
+    } else if (retryFetcher.data?.error) {
+      shopify.toast.show(`Retry failed: ${retryFetcher.data.error}`, { isError: true });
+    }
+  }, [retryFetcher.data, shopify]);
+
   const generateProduct = () => fetcher.submit({}, { method: "POST" });
   const startSync = () => syncFetcher.submit({}, { method: "post", action: "/app/sync-apg" });
 
-  // Display sync stats from latest sync or current sync
-  const displayStats = syncFetcher.data || latestStats;
+  // Display sync stats from latest sync, retry, or current sync
+  const displayStats = syncFetcher.data || retryFetcher.data || latestStats;
   const lastSyncTime = latestStats?.syncCompletedAt 
     ? new Date(latestStats.syncCompletedAt).toLocaleString()
     : "Never";
@@ -229,10 +240,26 @@ export default function Index() {
       >
         {isSyncing ? "Syncing..." : "Sync APG Inventory & Pricing"}
       </s-button>
+      
+      {latestStats && latestStats.skipped > 0 && (
+        <s-button
+          variant="secondary"
+          onClick={() => retryFetcher.submit({}, { method: "post", action: "/app/retry-skipped" })}
+          loading={retryFetcher.state === "submitting"}
+          disabled={retryFetcher.state === "submitting" || isSyncing}
+        >
+          {retryFetcher.state === "submitting" ? "Retrying..." : `Retry Skipped (${latestStats.skipped})`}
+        </s-button>
+      )}
     </s-stack>
     {isSyncing && (
       <s-text variant="bodySm" tone="subdued">
         Sync in progress... This may take several minutes for large catalogs. Do not close this page.
+      </s-text>
+    )}
+    {latestStats && latestStats.skipped > 0 && (
+      <s-text variant="bodySm" tone="info">
+        💡 <strong>Retry Skipped</strong> button will apply Jobber pricing to products that were skipped due to MAP=0. This is useful after a full sync.
       </s-text>
     )}
   </s-section>
