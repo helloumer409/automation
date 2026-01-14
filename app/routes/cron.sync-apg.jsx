@@ -1,6 +1,6 @@
-import { authenticate } from "../shopify.server";
 import { performSync } from "./app.sync-apg";
 import { db } from "../db.server";
+import shopify from "../shopify.server";
 
 /**
  * Automated sync endpoint - can be called by Railway cron or external scheduler
@@ -55,30 +55,54 @@ export async function loader({ request }) {
     // Run sync for each shop
     for (const session of sessions) {
       try {
-        // Create admin context manually (simplified - may need adjustment based on your auth setup)
-        // This is a workaround - in production, you may need to use Shopify's offline token
         const shop = session.shop;
         
         console.log(`🔄 Starting automated sync for shop: ${shop}`);
         
-        // Note: This requires offline access token or OAuth token refresh
-        // For now, we'll attempt to authenticate using the session
-        // You may need to adjust this based on your authentication flow
-        
-        // For automated sync, we need an admin context
-        // This is a placeholder - you'll need to implement proper offline token handling
-        // or use Shopify's app bridge with offline tokens
+        // Get full session with all required fields
+        const fullSession = await db.session.findFirst({
+          where: {
+            shop: shop,
+            expires: {
+              gt: new Date(),
+            },
+          },
+        });
+
+        if (!fullSession || !fullSession.accessToken) {
+          results.push({
+            shop,
+            status: "error",
+            error: "No valid session with access token found",
+          });
+          continue;
+        }
+
+        // Create admin context using the session's access token
+        const admin = shopify.clients.admin({
+          session: fullSession,
+        });
+
+        // Actually call performSync to run the sync
+        const syncResult = await performSync(admin, shop);
         
         results.push({
           shop,
-          status: "skipped",
-          message: "Automated sync requires offline token setup - see documentation",
+          status: "success",
+          synced: syncResult.synced || 0,
+          skipped: syncResult.skipped || 0,
+          errors: syncResult.errors?.length || 0,
+          successRate: syncResult.successRate || "0%",
+          message: syncResult.message || "Sync completed",
         });
+        
+        console.log(`✅ Automated sync completed for ${shop}: ${syncResult.synced} synced, ${syncResult.skipped} skipped`);
       } catch (error) {
+        console.error(`❌ Automated sync failed for ${session.shop}:`, error);
         results.push({
           shop: session.shop,
           status: "error",
-          error: error.message,
+          error: error.message || "Unknown error",
         });
       }
     }
