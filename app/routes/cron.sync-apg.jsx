@@ -1,5 +1,5 @@
-import { performSync } from "./app.sync-apg";
-import { db } from "../db.server";
+import { performSync } from "../services/sync.server";
+import db from "../db.server";
 import shopify from "../shopify.server";
 
 /**
@@ -10,7 +10,7 @@ import shopify from "../shopify.server";
  * To use with Railway Cron:
  * 1. Set SHOPIFY_CRON_SECRET in Railway environment variables
  * 2. Add cron job in Railway: https://docs.railway.app/develop/cron
- *    Schedule: "0 */6 * * *" (every 6 hours) or "0 * * * *" (every hour)
+ *    Schedule: "0 *\/6 * * *" (every 6 hours) or "0 * * * *" (every hour)
  *    Command: curl -X POST https://your-app.railway.app/cron/sync-apg?secret=YOUR_SECRET
  * 
  * Or use this endpoint directly with a secret query parameter

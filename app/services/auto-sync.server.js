@@ -1,5 +1,5 @@
 import cron from "node-cron";
-import { db } from "../db.server";
+import db from "../db.server";
 import shopify from "../shopify.server";
 
 let cronJob = null;
@@ -8,14 +8,14 @@ let cronJob = null;
  * Starts automated sync cron job
  * Runs sync every 6 hours by default (configurable via AUTO_SYNC_SCHEDULE env var)
  * 
- * Schedule format: Cron expression (e.g., "0 */6 * * *" = every 6 hours)
- * Default: "0 */6 * * *" (every 6 hours at minute 0)
+ * Schedule format: Cron expression (e.g., "0 *\/6 * * *" = every 6 hours)
+ * Default: "0 *\/6 * * *" (every 6 hours at minute 0)
  * 
  * Examples:
  * - "0 * * * *" = every hour
- * - "0 */2 * * *" = every 2 hours
+ * - "0 *\/2 * * *" = every 2 hours
  * - "0 9 * * *" = daily at 9 AM
- * - "*/30 * * * *" = every 30 minutes (use with caution)
+ * - "*\/30 * * * *" = every 30 minutes (use with caution)
  */
 export function startAutoSync() {
   // Stop existing job if running
@@ -50,7 +50,7 @@ export function startAutoSync() {
       }
 
       // Import here to avoid circular dependencies
-      const { performSync } = await import("../routes/app.sync-apg");
+      const { performSync } = await import("./sync.server");
       const shopify = await import("../shopify.server").then(m => m.default);
 
       for (const session of sessions) {

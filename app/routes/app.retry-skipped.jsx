@@ -3,7 +3,6 @@ import { getAPGIndex } from "../services/apg-lookup.server";
 import { getShopifyProducts } from "../services/shopify-products.server";
 import { syncAPGVariant, clearLocationCache } from "../services/apg-sync.server";
 import { getLatestSyncStats, saveSyncStats } from "../services/sync-stats.server";
-import { db } from "../db.server";
 
 /**
  * Retries sync for products that were skipped in the last sync
