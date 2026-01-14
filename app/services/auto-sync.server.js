@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import { db } from "../db.server";
-import { authenticate } from "../shopify.server";
+import shopify from "../shopify.server";
 
 let cronJob = null;
 
@@ -51,19 +51,38 @@ export function startAutoSync() {
 
       // Import here to avoid circular dependencies
       const { performSync } = await import("../routes/app.sync-apg");
+      const shopify = await import("../shopify.server").then(m => m.default);
 
       for (const session of sessions) {
         try {
           console.log(`🔄 Running automated sync for shop: ${session.shop}`);
           
-          // Note: Automated sync requires offline access tokens
-          // For now, we'll need to handle authentication differently
-          // This is a placeholder - you'll need to implement proper offline token handling
-          
-          // TODO: Implement offline token authentication for automated sync
-          console.log(`⚠️ Automated sync for ${session.shop} skipped - requires offline token setup`);
+          // Get full session with access token
+          const fullSession = await db.session.findFirst({
+            where: {
+              shop: session.shop,
+              expires: {
+                gt: new Date(),
+              },
+            },
+          });
+
+          if (!fullSession || !fullSession.accessToken) {
+            console.log(`⚠️ No valid session found for ${session.shop}`);
+            continue;
+          }
+
+          // Create admin context using session
+          // Note: This uses the session's access token directly
+          const admin = shopify.clients.admin({
+            session: fullSession,
+          });
+
+          // Run sync
+          await performSync(admin, session.shop);
+          console.log(`✅ Automated sync completed for ${session.shop}`);
         } catch (error) {
-          console.error(`❌ Automated sync failed for ${session.shop}:`, error);
+          console.error(`❌ Automated sync failed for ${session.shop}:`, error.message);
         }
       }
     } catch (error) {

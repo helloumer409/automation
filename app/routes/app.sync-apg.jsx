@@ -176,23 +176,8 @@ async function performSync(admin, shop) {
   const totalProcessed = synced + skipped;
   const successRate = totalProcessed > 0 ? ((synced / totalProcessed) * 100).toFixed(1) : 0;
   
-  console.log(`\n✅ SYNC COMPLETE`);
-  console.log(`📊 Summary:`);
-  console.log(`   • Total variants processed: ${totalProcessed}`);
-  console.log(`   • Successfully synced: ${synced} (${successRate}%)`);
-  console.log(`   • Skipped (no match): ${skipped}`);
-  console.log(`   • Errors: ${errors.length}`);
-  console.log(`\n💰 MAP Pricing Report:`);
-  console.log(`   • Used MAP price: ${mapStats.mapMatched}`);
-  console.log(`   • Used Jobber (MAP was 0): ${mapStats.mapUsedJobber}`);
-  console.log(`   • Used Retail (MAP & Jobber were 0): ${mapStats.mapUsedRetail}`);
-  console.log(`   • MAP price not found/skipped: ${mapStats.mapSkipped}`);
-  if (mapStats.mapSkipped > 0 && mapStats.mapSkippedReasons.length > 0) {
-    console.log(`   • Sample reasons (first 10):`);
-    mapStats.mapSkippedReasons.slice(0, 10).forEach((item, idx) => {
-      console.log(`     ${idx + 1}. ${item.sku}: ${item.reason}`);
-    });
-  }
+  // Reduced logging to prevent Railway rate limits - single line summary
+  console.log(`✅ SYNC COMPLETE: ${synced}/${totalProcessed} synced (${successRate}%), ${skipped} skipped, ${errors.length} errors | MAP:${mapStats.mapMatched} Jobber:${mapStats.mapUsedJobber} Retail:${mapStats.mapUsedRetail} Skipped:${mapStats.mapSkipped}`);
 
   // Save stats to database
   if (shop) {

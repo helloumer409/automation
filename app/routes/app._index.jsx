@@ -15,11 +15,19 @@ export const loader = async ({ request }) => {
   const latestStats = await getLatestSyncStats(shop);
   
   // Get comprehensive product stats
+  // Wrap in try-catch and timeout to prevent page from breaking
   let productStats = null;
   try {
-    productStats = await getProductStats(admin);
+    // Set a timeout for product stats (30 seconds max)
+    const statsPromise = getProductStats(admin);
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("Product stats timeout")), 30000)
+    );
+    productStats = await Promise.race([statsPromise, timeoutPromise]);
   } catch (error) {
-    console.error("Failed to fetch product stats:", error);
+    // Silently fail - stats are nice to have but not critical
+    console.error("Failed to fetch product stats (non-critical):", error.message);
+    productStats = null; // Ensure it's null on error
   }
   
   // Check if auto-sync is enabled
@@ -303,14 +311,25 @@ export default function Index() {
         {isSyncing ? "Syncing..." : "Sync APG Inventory & Pricing"}
       </s-button>
       
-      {latestStats && latestStats.skipped > 0 && (
+      {(latestStats?.skipped > 0 || latestStats?.mapStats?.mapSkipped > 0) && (
         <s-button
           variant="secondary"
           onClick={() => retryFetcher.submit({}, { method: "post", action: "/app/retry-skipped" })}
           loading={retryFetcher.state === "submitting"}
           disabled={retryFetcher.state === "submitting" || isSyncing}
         >
-          {retryFetcher.state === "submitting" ? "Retrying..." : `Retry Skipped (${latestStats.skipped})`}
+          {retryFetcher.state === "submitting" ? "Retrying..." : `Retry MAP=0 Products (${latestStats?.mapStats?.mapSkipped || latestStats?.skipped || 0})`}
+        </s-button>
+      )}
+      
+      {productStats && productStats.mapZeroProducts > 0 && (
+        <s-button
+          variant="secondary"
+          onClick={() => retryFetcher.submit({}, { method: "post", action: "/app/retry-skipped" })}
+          loading={retryFetcher.state === "submitting"}
+          disabled={retryFetcher.state === "submitting" || isSyncing}
+        >
+          {retryFetcher.state === "submitting" ? "Applying Jobber Price..." : `Apply Jobber Price to MAP=0 (${productStats.mapZeroProducts})`}
         </s-button>
       )}
     </s-stack>

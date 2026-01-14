@@ -138,13 +138,14 @@ export async function syncAPGVariant({
       if (stats) stats.mapUsedRetail++;
     } else {
       // ONLY skip if ALL prices (MAP, Jobber, Retail) are invalid or 0
-      // Log first few for debugging to see what fields are actually in CSV
+      // REMOVED DEBUG LOGGING - causes Railway rate limits
+      // Only log in extreme cases (first skip ever)
       const skippedCount = stats ? stats.mapSkipped : 0;
-      if (skippedCount < 5) {
-        // Log sample CSV row structure to debug field names
-        const sampleKeys = Object.keys(apgRow).slice(0, 20);
-        console.log(`🔍 DEBUG: ${variant.sku || variant.barcode} - CSV fields found: ${sampleKeys.join(", ")}`);
-        console.log(`🔍 DEBUG: MAP="${mapPriceStr}", Jobber="${jobberPriceStr}", Retail="${retailPriceStr}"`);
+      if (skippedCount === 0) {
+        // Log only the very first skip for debugging
+        const sampleKeys = Object.keys(apgRow).slice(0, 10);
+        console.log(`🔍 First skip - CSV fields: ${sampleKeys.join(", ")}`);
+        console.log(`🔍 MAP="${mapPriceStr}", Jobber="${jobberPriceStr}", Retail="${retailPriceStr}"`);
       }
       
       // Track reason for reporting
