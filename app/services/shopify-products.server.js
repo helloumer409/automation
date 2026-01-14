@@ -23,6 +23,7 @@ export async function getShopifyProducts(admin) {
             nodes {
               id
               title
+              status
               variants(first: 250) {
                 nodes {
                   id
@@ -48,6 +49,7 @@ export async function getShopifyProducts(admin) {
             nodes {
               id
               title
+              status
               variants(first: 250) {
                 nodes {
                   id

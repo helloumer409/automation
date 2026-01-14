@@ -4,14 +4,23 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { getLatestSyncStats } from "../services/sync-stats.server";
+import { getProductStats } from "../services/product-stats.server";
 
 
 export const loader = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
   
   // Get latest sync stats
   const latestStats = await getLatestSyncStats(shop);
+  
+  // Get comprehensive product stats
+  let productStats = null;
+  try {
+    productStats = await getProductStats(admin);
+  } catch (error) {
+    console.error("Failed to fetch product stats:", error);
+  }
   
   // Check if auto-sync is enabled
   const autoSyncEnabled = process.env.AUTO_SYNC_SCHEDULE ? true : false;
@@ -19,6 +28,7 @@ export const loader = async ({ request }) => {
 
   return {
     latestStats,
+    productStats,
     autoSyncEnabled,
     autoSyncSchedule,
   };
@@ -90,7 +100,7 @@ export const action = async ({ request }) => {
 };
 
 export default function Index() {
-  const { latestStats, autoSyncEnabled, autoSyncSchedule } = useLoaderData();
+  const { latestStats, productStats, autoSyncEnabled, autoSyncSchedule } = useLoaderData();
   const fetcher = useFetcher();
   const syncFetcher = useFetcher();
   const retryFetcher = useFetcher();
@@ -137,8 +147,60 @@ export default function Index() {
   return (
 <s-page heading="CPG Automation Manager">
   
+  {/* Product Statistics Section */}
+  {productStats && (
+    <s-section heading="📦 Store Product Statistics">
+      <s-grid columns="4">
+        <s-grid-item>
+          <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+            <s-text variant="headingMd">Total Products</s-text>
+            <s-text variant="headingLg">{productStats.totalProducts.toLocaleString()}</s-text>
+            <s-text variant="bodySm" tone="subdued">{productStats.totalVariants.toLocaleString()} variants</s-text>
+          </s-box>
+        </s-grid-item>
+        
+        <s-grid-item>
+          <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+            <s-text variant="headingMd">Active Products</s-text>
+            <s-text variant="headingLg" tone="success">{productStats.activeProducts.toLocaleString()}</s-text>
+          </s-box>
+        </s-grid-item>
+        
+        <s-grid-item>
+          <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+            <s-text variant="headingMd">Draft Products</s-text>
+            <s-text variant="headingLg" tone="warning">{productStats.draftProducts.toLocaleString()}</s-text>
+          </s-box>
+        </s-grid-item>
+        
+        <s-grid-item>
+          <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+            <s-text variant="headingMd">With Inventory</s-text>
+            <s-text variant="headingLg" tone="success">{productStats.productsWithInventory.toLocaleString()}</s-text>
+            <s-text variant="bodySm" tone="subdued">{productStats.inventoryStats.totalQuantity.toLocaleString()} total units</s-text>
+          </s-box>
+        </s-grid-item>
+      </s-grid>
+      
+      <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued" style={{ marginTop: "1rem" }}>
+        <s-heading>🔗 APG Matching Status</s-heading>
+        <s-grid columns="3">
+          <s-grid-item>
+            <s-text variant="bodyMd"><strong>Matched with APG:</strong> {productStats.matchedWithAPG.toLocaleString()}</s-text>
+          </s-grid-item>
+          <s-grid-item>
+            <s-text variant="bodyMd" tone="warning"><strong>Unmatched:</strong> {productStats.unmatchedWithAPG.toLocaleString()}</s-text>
+          </s-grid-item>
+          <s-grid-item>
+            <s-text variant="bodyMd" tone="info"><strong>MAP = 0 (Need Jobber):</strong> {productStats.mapZeroProducts.toLocaleString()}</s-text>
+          </s-grid-item>
+        </s-grid>
+      </s-box>
+    </s-section>
+  )}
+
   {/* Sync Statistics Section */}
-  <s-section heading="📊 Sync Statistics">
+  <s-section heading="📊 Last Sync Results">
     {displayStats && (
       <s-stack direction="block" gap="base">
         <s-grid columns="4">

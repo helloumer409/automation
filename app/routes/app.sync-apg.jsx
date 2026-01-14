@@ -1,27 +1,27 @@
 import { authenticate } from "../shopify.server";
 import { getAPGIndex } from "../services/apg-lookup.server";
 import { getShopifyProducts } from "../services/shopify-products.server";
-import { syncAPGVariant, clearLocationCache } from "../services/apg-sync.server";
+import { syncAPGVariant, clearLocationCache, updateProductStatus } from "../services/apg-sync.server";
 import { saveSyncStats } from "../services/sync-stats.server";
 
 // Internal function that performs the actual sync (shared by manual and automated sync)
 async function performSync(admin, shop) {
   const syncStartTime = new Date();
-  
-  // Clear location cache at start of sync
-  clearLocationCache();
-  
+
+    // Clear location cache at start of sync
+    clearLocationCache();
+    
   console.log("📥 Loading APG data from CSV...");
-  const apgIndex = await getAPGIndex();
+    const apgIndex = await getAPGIndex();
   console.log(`✅ APG index loaded: ${apgIndex.size} items`);
   
   console.log("📦 Fetching Shopify products...");
-  const shopifyProducts = await getShopifyProducts(admin);
+    const shopifyProducts = await getShopifyProducts(admin);
   console.log(`✅ Fetched ${shopifyProducts.length} products from Shopify`);
 
-  let synced = 0;
-  let skipped = 0;
-  const errors = [];
+    let synced = 0;
+    let skipped = 0;
+    const errors = [];
   
   // Track MAP pricing statistics
   const mapStats = {
@@ -37,22 +37,26 @@ async function performSync(admin, shop) {
   let processedVariants = 0;
   const progressInterval = Math.max(1, Math.floor(totalVariants / 20)); // Log every 5%
 
+  // Track which products we've already updated status for (to avoid duplicate updates)
+  const productsStatusUpdated = new Set(); // Track products set to ACTIVE
+  const productsSetToDraft = new Set(); // Track products set to DRAFT
+
   console.log(`🚀 Starting sync for ${shopifyProducts.length} products (${totalVariants} variants)...`);
 
-  for (const product of shopifyProducts) {
-    for (const variant of product.variants.nodes) {
+    for (const product of shopifyProducts) {
+      for (const variant of product.variants.nodes) {
       processedVariants++;
       
-      // Log progress less frequently to reduce log spam (every 10% instead of 5%)
-      const progressInterval10 = Math.max(1, Math.floor(totalVariants / 10));
-      if (processedVariants % progressInterval10 === 0 || processedVariants === totalVariants) {
+      // Log progress much less frequently to reduce Railway rate limits (every 20% instead of 10%)
+      const progressInterval20 = Math.max(1, Math.floor(totalVariants / 5));
+      if (processedVariants % progressInterval20 === 0 || processedVariants === totalVariants) {
         const progress = ((processedVariants / totalVariants) * 100).toFixed(1);
         console.log(`📊 Progress: ${processedVariants}/${totalVariants} (${progress}%) - Synced: ${synced}, Skipped: ${skipped}`);
       }
-      if (!variant.barcode) {
-        skipped++;
-        continue;
-      }
+        if (!variant.barcode) {
+          skipped++;
+          continue;
+        }
 
       // Try multiple barcode formats for matching
       const barcodeStr = String(variant.barcode).trim();
@@ -78,9 +82,9 @@ async function performSync(admin, shop) {
       }
       
       // Try SKU as fallback (before UPC variations)
-      if (!apgItem && variant.sku) {
-        apgItem = apgIndex.get(String(variant.sku).trim());
-      }
+        if (!apgItem && variant.sku) {
+          apgItem = apgIndex.get(String(variant.sku).trim());
+        }
 
       // Try matching by UPC variations if SKU/barcode didn't match
       if (!apgItem && variant.barcode) {
@@ -119,32 +123,48 @@ async function performSync(admin, shop) {
         if (!apgItem) {
           apgItem = apgIndex.get(skuStr);
         }
-      }
-      
-      if (!apgItem) {
-        skipped++;
-        // Only log missing matches much less frequently to reduce log spam
-        if (skipped % 2000 === 0) {
+        }
+
+        if (!apgItem) {
+          skipped++;
+        // Only log missing matches much less frequently to reduce Railway rate limits
+        if (skipped % 5000 === 0) {
           console.log(`⏭ ${skipped} products skipped (no APG match so far)`);
+        }
+        
+        // Set unmatched products to DRAFT (user requirement)
+        // Only update once per product (not per variant) - track which products we've already updated
+        if (!productsSetToDraft.has(product.id) && product.status && product.status !== "DRAFT") {
+          try {
+            await updateProductStatus(admin, product.id, product.status, false); // false = set to DRAFT
+            productsSetToDraft.add(product.id);
+          } catch (error) {
+            // Silent fail - status update is optional
+          }
         }
         continue;
       }
       
       // Sync the variant - use static import to preserve admin context
-      try {
-        await syncAPGVariant({
-          admin,
-          productId: product.id,
-          variant: variant,
-          apgRow: apgItem,
+        try {
+          await syncAPGVariant({
+            admin,
+            productId: product.id,
+          productStatus: product.status, // Pass status for ACTIVE update (matched products)
+            variant: variant,
+            apgRow: apgItem,
         }, mapStats);
-        synced++;
-      } catch (error) {
-        errors.push({
-          product: product.title,
-          variant: variant.sku || variant.barcode,
-          error: error.message
-        });
+          synced++;
+        
+        // Mark this product as matched (will be set to ACTIVE)
+        // Status update happens inside syncAPGVariant, but we track it here to avoid duplicate updates
+        productsStatusUpdated.add(product.id);
+        } catch (error) {
+          errors.push({
+            product: product.title,
+            variant: variant.sku || variant.barcode,
+            error: error.message
+          });
         // Only log critical errors, not every sync error (reduces log spam)
         if (errors.length <= 10 || errors.length % 100 === 0) {
           console.error(`❌ Sync error for ${variant.sku || variant.barcode}: ${error.message}`);
@@ -189,10 +209,10 @@ async function performSync(admin, shop) {
     });
   }
 
-  return {
-    success: true,
-    synced,
-    skipped,
+    return {
+      success: true,
+      synced,
+      skipped,
     total: totalProcessed,
     successRate: `${successRate}%`,
     mapStats: {

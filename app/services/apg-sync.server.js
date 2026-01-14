@@ -5,26 +5,26 @@ async function getLocationId(admin) {
   if (cachedLocationId) return cachedLocationId;
 
   try {
-    const locationsResponse = await admin.graphql(`#graphql
-      query {
-        locations(first: 10) {
-          nodes {
-            id
-            name
-          }
+  const locationsResponse = await admin.graphql(`#graphql
+    query {
+      locations(first: 10) {
+        nodes {
+          id
+          name
         }
       }
-    `);
-    
-    const locationsResult = await locationsResponse.json();
+    }
+  `);
+  
+  const locationsResult = await locationsResponse.json();
     // Just get the first location (most shops have one primary location)
     const location = locationsResult.data?.locations?.nodes?.[0];
     cachedLocationId = location?.id || null;
-    
-    if (cachedLocationId) {
+  
+  if (cachedLocationId) {
       console.log(`📍 Using location: ${location.name} (${cachedLocationId})`);
-    } else {
-      console.warn("⚠️ No location found in Shopify");
+  } else {
+    console.warn("⚠️ No location found in Shopify");
     }
   } catch (error) {
     console.warn("⚠️ Could not fetch locations:", error.message);
@@ -57,6 +57,7 @@ function parsePrice(priceStr) {
 export async function syncAPGVariant({
   admin,
   productId,
+  productStatus, // Optional: current product status
   variant,
   apgRow
 }, stats = null) {
@@ -204,11 +205,13 @@ export async function syncAPGVariant({
   // Removed barcode mismatch logging to reduce spam
 
   /* 1️⃣ PRICE - Always update price (MAP or Jobber fallback) */
-  // Ensure admin context is still valid
+  // Ensure admin context is still valid before each GraphQL call
   if (!admin || !admin.graphql) {
-    throw new Error("Admin context lost during sync");
+    throw new Error("Admin context lost during sync - missing access token");
   }
   
+  // Validate admin context by checking if graphql function exists and is callable
+  try {
   const priceResponse = await admin.graphql(`#graphql
     mutation {
       productVariantsBulkUpdate(
@@ -232,6 +235,13 @@ export async function syncAPGVariant({
   if (priceResult.data?.productVariantsBulkUpdate?.userErrors?.length > 0) {
     const errors = priceResult.data.productVariantsBulkUpdate.userErrors;
     throw new Error(`Price update failed: ${errors.map(e => e.message).join(", ")}`);
+    }
+  } catch (error) {
+    // If it's an access token error, throw a more descriptive error
+    if (error.message?.includes("access token") || error.message?.includes("MissingRequiredArgument")) {
+      throw new Error("Admin context lost during sync - access token expired or invalid. Please restart sync.");
+    }
+    throw error;
   }
 
   /* 2️⃣ INVENTORY TRACKING & QUANTITY */
@@ -253,48 +263,48 @@ export async function syncAPGVariant({
   // ALWAYS enable tracking - required for cost visibility
   // Wrap in try-catch but don't let it block price/cost updates
   try {
-    const trackingResponse = await admin.graphql(`#graphql
-      mutation {
-        inventoryItemUpdate(
-          id: "${variant.inventoryItem.id}",
-          input: { tracked: true }
-        ) {
-          userErrors { message field }
-          inventoryItem {
-            id
-            tracked
-          }
+  const trackingResponse = await admin.graphql(`#graphql
+    mutation {
+      inventoryItemUpdate(
+        id: "${variant.inventoryItem.id}",
+        input: { tracked: true }
+      ) {
+        userErrors { message field }
+        inventoryItem {
+          id
+          tracked
         }
       }
-    `);
-    
+    }
+  `);
+  
     // Try to set inventory quantity - get location first, but if unavailable, skip location requirement
-    const locationId = await getLocationId(admin);
-    
+  const locationId = await getLocationId(admin);
+  
     if (locationId && inventoryQty >= 0) {
-      // Get current inventory levels
+    // Get current inventory levels
       try {
         const levelsResponse = await admin.graphql(`#graphql
-          query {
-            inventoryItem(id: "${variant.inventoryItem.id}") {
+      query {
+        inventoryItem(id: "${variant.inventoryItem.id}") {
+          id
+          inventoryLevels(first: 10) {
+            nodes {
               id
-              inventoryLevels(first: 10) {
-                nodes {
-                  id
-                  location {
-                    id
+              location {
+                id
                     name
                   }
                   quantities(names: ["available"]) {
                     name
                     quantity
-                  }
-                }
               }
             }
           }
-        `);
-        
+        }
+      }
+    `);
+    
         const levelsResult = await levelsResponse.json();
         const inventoryLevels = levelsResult.data?.inventoryItem?.inventoryLevels?.nodes || [];
         const existingLevel = inventoryLevels.find(level => level.location?.id === locationId);
@@ -302,63 +312,63 @@ export async function syncAPGVariant({
         if (!existingLevel && inventoryLevels.length === 0) {
           // Create new inventory level at location with total quantity
           try {
-            const createLevelResponse = await admin.graphql(`#graphql
-              mutation {
-                inventorySetOnHandQuantities(
-                  input: {
-                    reason: "correction"
-                    setQuantities: [{
-                      inventoryItemId: "${variant.inventoryItem.id}"
-                      locationId: "${locationId}"
-                      quantity: ${inventoryQty}
-                    }]
-                  }
-                ) {
-                  userErrors { message field }
-                  inventoryAdjustmentGroup {
-                    createdAt
-                    reason
-                    changes {
-                      name
-                      delta
-                    }
-                  }
-                }
+      const createLevelResponse = await admin.graphql(`#graphql
+        mutation {
+          inventorySetOnHandQuantities(
+            input: {
+              reason: "correction"
+              setQuantities: [{
+                inventoryItemId: "${variant.inventoryItem.id}"
+                locationId: "${locationId}"
+                quantity: ${inventoryQty}
+              }]
+            }
+          ) {
+            userErrors { message field }
+            inventoryAdjustmentGroup {
+              createdAt
+              reason
+              changes {
+                name
+                delta
               }
-            `);
-            
+            }
+          }
+        }
+      `);
+      
             // Inventory set silently - no logging to reduce spam
           } catch (createError) {
             // Silent fail - inventory will be set once location is available
           }
         } else if (existingLevel) {
-          // Update existing inventory level
+      // Update existing inventory level
           try {
-            const setInventoryResponse = await admin.graphql(`#graphql
-              mutation {
-                inventorySetOnHandQuantities(
-                  input: {
-                    reason: "correction"
-                    setQuantities: [{
-                      inventoryItemId: "${variant.inventoryItem.id}"
-                      locationId: "${locationId}"
-                      quantity: ${inventoryQty}
-                    }]
-                  }
-                ) {
-                  userErrors { message field }
-                  inventoryAdjustmentGroup {
-                    createdAt
-                    reason
-                    changes {
-                      name
-                      delta
-                    }
-                  }
-                }
+      const setInventoryResponse = await admin.graphql(`#graphql
+        mutation {
+          inventorySetOnHandQuantities(
+            input: {
+              reason: "correction"
+              setQuantities: [{
+                inventoryItemId: "${variant.inventoryItem.id}"
+                locationId: "${locationId}"
+                quantity: ${inventoryQty}
+              }]
+            }
+          ) {
+            userErrors { message field }
+            inventoryAdjustmentGroup {
+              createdAt
+              reason
+              changes {
+                name
+                delta
               }
-            `);
-            
+            }
+          }
+        }
+      `);
+      
             // Inventory updated silently
           } catch (updateError) {
             // Silent fail
@@ -380,6 +390,10 @@ export async function syncAPGVariant({
   // Metafield approach is more reliable and always works
   if (costPrice && costPrice > 0) {
     try {
+      // Validate admin context before cost update
+      if (!admin || !admin.graphql) {
+        throw new Error("Admin context lost during cost update");
+      }
       // Primary method: Set cost via metafield (always works, visible in product edit)
       await setCostAsMetafield(admin, variant.id, costPrice);
       // Removed logging to reduce log spam - cost is being set silently
@@ -432,7 +446,7 @@ export async function syncAPGVariant({
           
           // Cost is already set via metafield above, this is just fallback
           // Removed logging to reduce spam
-        } else {
+      } else {
           // No location - metafield already set above, this is just fallback
         }
       } catch (inventoryError) {
@@ -440,13 +454,82 @@ export async function syncAPGVariant({
       }
     }
   }
+  
+  /* 4️⃣ PRODUCT STATUS - Set matched products to ACTIVE (user requirement) */
+  // Products matched with APG → ACTIVE
+  // Note: Unmatched products are set to DRAFT in the main sync loop
+  if (productStatus && productStatus !== "ACTIVE") {
+    try {
+      // This product is matched (we're syncing it), so set to ACTIVE
+      await updateProductStatus(admin, productId, productStatus, true);
+    } catch (error) {
+      // Silent fail - status update is optional
+    }
+  }
+  
   // Removed cost logging to reduce spam
+}
+
+/**
+ * Updates product status based on APG match (user requirement)
+ * - Products matched with APG → Set to ACTIVE
+ * - Products unmatched with APG → Set to DRAFT
+ */
+export async function updateProductStatus(admin, productId, currentStatus, shouldBeActive) {
+  // Determine target status
+  const targetStatus = shouldBeActive ? "ACTIVE" : "DRAFT";
+  
+  // Only update if status needs to change
+  if (currentStatus === targetStatus) {
+    return; // Already in correct status
+  }
+  
+  try {
+    // Validate admin context
+    if (!admin || !admin.graphql) {
+      return; // Skip if admin context is invalid
+    }
+    
+    const statusResponse = await admin.graphql(`#graphql
+      mutation {
+        productUpdate(
+          input: { 
+            id: "${productId}"
+            status: ${targetStatus}
+          }
+        ) {
+          product {
+            id
+            status
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `);
+    
+    const statusResult = await statusResponse.json();
+    if (statusResult.data?.productUpdate?.userErrors?.length > 0) {
+      // Silent fail - status update is optional
+      return;
+    }
+  } catch (error) {
+    // Silent fail - status update is optional, don't block sync
+    return;
+  }
 }
 
 /**
  * Sets cost as a metafield for visibility (fallback method)
  */
 async function setCostAsMetafield(admin, variantId, costPrice) {
+  // Validate admin context before GraphQL call
+  if (!admin || !admin.graphql) {
+    throw new Error("Admin context lost during metafield update");
+  }
+  
   try {
     const metafieldResponse = await admin.graphql(`#graphql
       mutation {
@@ -471,12 +554,13 @@ async function setCostAsMetafield(admin, variantId, costPrice) {
     `);
     
     const metafieldResult = await metafieldResponse.json();
-    if (metafieldResult.data?.metafieldsSet?.userErrors?.length === 0) {
-      console.log(`💰 Cost stored as metafield for variant ${variantId}`);
+    if (metafieldResult.data?.metafieldsSet?.userErrors?.length > 0) {
+      // Silent fail - metafield is optional
+      return;
     }
+    // Removed success logging to reduce Railway rate limits
   } catch (error) {
-    throw error;
+    // Silent fail - metafield is optional, don't block sync
+    return;
   }
-
-  console.log(`✅ Synced ${variant.sku || variant.barcode} - Price: $${mapPrice.toFixed(2)}, Inventory: ${inventoryQty}${warehouseTotal > 0 ? ` (NV:${nvWhse}+KY:${kyWhse}+MFG:${mfgInvt}+WA:${waWhse})` : ""}${costPrice > 0 ? `, Cost: $${costPrice.toFixed(2)}` : ""}`);
 }
