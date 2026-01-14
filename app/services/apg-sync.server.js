@@ -168,6 +168,8 @@ export async function syncAPGVariant({
         }
       }
       // Return early only if NO valid price found (MAP, Jobber, Retail all invalid)
+      // But still log what we tried for debugging
+      console.log(`⏭ Skipping ${variant.sku || variant.barcode} - all prices invalid: MAP=${mapPriceStr}, Jobber=${jobberPriceStr || "N/A"}, Retail=${retailPriceStr || "N/A"}`);
       return;
     }
   } else {

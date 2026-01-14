@@ -18,15 +18,16 @@ export const loader = async ({ request }) => {
   // Wrap in try-catch and timeout to prevent page from breaking
   let productStats = null;
   try {
-    // Set a timeout for product stats (30 seconds max)
+    // Set a longer timeout for product stats (60 seconds for large stores)
     const statsPromise = getProductStats(admin);
     const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Product stats timeout")), 30000)
+      setTimeout(() => reject(new Error("Product stats timeout after 60 seconds")), 60000)
     );
     productStats = await Promise.race([statsPromise, timeoutPromise]);
+    console.log(`✅ Product stats loaded: ${productStats.totalProducts} products, ${productStats.totalVariants} variants`);
   } catch (error) {
-    // Silently fail - stats are nice to have but not critical
-    console.error("Failed to fetch product stats (non-critical):", error.message);
+    // Log error but don't break the page
+    console.error("⚠️ Failed to fetch product stats (non-critical):", error.message);
     productStats = null; // Ensure it's null on error
   }
   

@@ -6,6 +6,11 @@ import { getShopifyProducts } from "./shopify-products.server";
  */
 export async function getProductStats(admin) {
   try {
+    // Validate admin context
+    if (!admin || !admin.graphql) {
+      throw new Error("Admin context is missing - cannot fetch product stats");
+    }
+    
     // Get all Shopify products
     const shopifyProducts = await getShopifyProducts(admin);
     
