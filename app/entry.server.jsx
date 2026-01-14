@@ -5,13 +5,15 @@ import { isbot } from "isbot";
 import { renderToPipeableStream } from "react-dom/server";
 import { startAutoSync } from "./services/auto-sync.server";
 
-// Start automated sync when server starts (if enabled)
+// Start automated sync when server starts
+// Runs automatically by default (every 6 hours) unless AUTO_SYNC_DISABLED=true
 // This runs once when the module loads, not on every request
-if (process.env.AUTO_SYNC_SCHEDULE && typeof process !== "undefined") {
+if (typeof process !== "undefined" && process.env.AUTO_SYNC_DISABLED !== "true") {
   // Only start once, check if already started to prevent multiple starts
   if (!global.autoSyncStarted) {
     startAutoSync();
     global.autoSyncStarted = true;
+    console.log("✅ Auto-sync enabled by default (runs every 6 hours). Set AUTO_SYNC_DISABLED=true to disable.");
   }
 }
 

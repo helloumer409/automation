@@ -23,9 +23,15 @@ export function startAutoSync() {
     cronJob.stop();
   }
 
+  // Default to every 6 hours if not specified
+  // User can override with AUTO_SYNC_SCHEDULE env var
+  // Set AUTO_SYNC_DISABLED=true to disable auto-sync completely
   const schedule = process.env.AUTO_SYNC_SCHEDULE || "0 */6 * * *";
   
   console.log(`⏰ Starting automated sync scheduler: ${schedule}`);
+  console.log(`   📅 Sync will run automatically every 6 hours`);
+  console.log(`   🔧 To change schedule, set AUTO_SYNC_SCHEDULE env var (e.g., "0 * * * *" for hourly)`);
+  console.log(`   ⏹️  To disable, set AUTO_SYNC_DISABLED=true`);
   
   cronJob = cron.schedule(schedule, async () => {
     console.log("🔄 Automated sync triggered by cron job");

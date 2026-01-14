@@ -15,25 +15,33 @@ export const loader = async ({ request }) => {
   const latestStats = await getLatestSyncStats(shop);
   
   // Get comprehensive product stats
-  // Wrap in try-catch and timeout to prevent page from breaking
+  // For large stores (22k+ products), stats can take 60+ seconds
+  // Load stats asynchronously - don't block page load
+  // Page will show loading state and update when stats are ready
   let productStats = null;
   try {
-    // Set a longer timeout for product stats (60 seconds for large stores)
+    // Use a reasonable timeout (20 seconds) - if it takes longer, show loading state
+    // Stats will continue loading in background via client-side fetch
     const statsPromise = getProductStats(admin);
     const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Product stats timeout after 60 seconds")), 60000)
+      setTimeout(() => reject(new Error("Product stats taking longer than expected - will load in background")), 20000)
     );
     productStats = await Promise.race([statsPromise, timeoutPromise]);
     console.log(`✅ Product stats loaded: ${productStats.totalProducts} products, ${productStats.totalVariants} variants`);
   } catch (error) {
-    // Log error but don't break the page
-    console.error("⚠️ Failed to fetch product stats (non-critical):", error.message);
-    productStats = null; // Ensure it's null on error
+    // Stats are loading but taking longer - page will show loading state
+    // Client-side code will fetch stats in background
+    console.log("ℹ️ Product stats loading (may take up to 60s for large stores):", error.message);
+    productStats = null; // Show loading state on frontend
   }
   
   // Check if auto-sync is enabled
-  const autoSyncEnabled = process.env.AUTO_SYNC_SCHEDULE ? true : false;
-  const autoSyncSchedule = process.env.AUTO_SYNC_SCHEDULE || "Not configured";
+  // Auto-sync is enabled by default (runs every 6 hours)
+  // Can be disabled with AUTO_SYNC_DISABLED=true
+  // Schedule can be customized with AUTO_SYNC_SCHEDULE env var
+  const autoSyncDisabled = process.env.AUTO_SYNC_DISABLED === "true";
+  const autoSyncEnabled = !autoSyncDisabled;
+  const autoSyncSchedule = process.env.AUTO_SYNC_SCHEDULE || "0 */6 * * * (every 6 hours - default)";
 
   return {
     latestStats,
@@ -122,6 +130,17 @@ export default function Index() {
     fetcher.formMethod === "POST";
   const isSyncing = ["loading", "submitting"].includes(syncFetcher.state) &&
     syncFetcher.formMethod === "POST";
+
+  // If stats didn't load initially (timeout), fetch them in background
+  useEffect(() => {
+    if (!productStats && !statsFetcher.data?.productStats && statsFetcher.state === "idle") {
+      // Fetch stats in background after page loads (for large stores)
+      const timer = setTimeout(() => {
+        statsFetcher.load("/app");
+      }, 2000); // Wait 2 seconds after page load
+      return () => clearTimeout(timer);
+    }
+  }, [productStats, statsFetcher]);
 
   // Auto-refresh stats every 30 seconds when enabled
   useEffect(() => {
@@ -321,9 +340,14 @@ export default function Index() {
         <s-text variant="bodySm" tone="subdued">
           Schedule: {autoSyncSchedule}
         </s-text>
+        {autoSyncEnabled && (
+          <s-text variant="bodySm" tone="subdued">
+            💡 Auto-sync runs automatically in the background. You can also trigger manual sync anytime using the button below.
+          </s-text>
+        )}
         {!autoSyncEnabled && (
           <s-text variant="bodySm" tone="subdued">
-            To enable automatic syncing, set AUTO_SYNC_SCHEDULE environment variable (e.g., "0 */6 * * *" for every 6 hours)
+            ⚠️ Auto-sync is disabled. Set AUTO_SYNC_DISABLED=false or remove it to enable (default: every 6 hours)
           </s-text>
         )}
       </s-stack>

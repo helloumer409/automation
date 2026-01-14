@@ -11,11 +11,32 @@ export async function getProductStats(admin) {
       throw new Error("Admin context is missing - cannot fetch product stats");
     }
     
-    // Get all Shopify products
+    // Get all Shopify products (this is the slow part for 22k+ products)
     const shopifyProducts = await getShopifyProducts(admin);
     
-    // Get APG index for matching
+    // Get APG index for matching (cache this to speed up)
     const apgIndex = await getAPGIndex();
+    
+    // Early return if no products
+    if (!shopifyProducts || shopifyProducts.length === 0) {
+      return {
+        totalProducts: 0,
+        totalVariants: 0,
+        activeProducts: 0,
+        draftProducts: 0,
+        archivedProducts: 0,
+        productsWithInventory: 0,
+        productsWithInventoryCount: 0,
+        matchedWithAPG: 0,
+        unmatchedWithAPG: 0,
+        mapZeroProducts: 0,
+        inventoryStats: {
+          withInventory: 0,
+          withoutInventory: 0,
+          totalQuantity: 0,
+        },
+      };
+    }
     
     let totalProducts = shopifyProducts.length;
     let totalVariants = 0;

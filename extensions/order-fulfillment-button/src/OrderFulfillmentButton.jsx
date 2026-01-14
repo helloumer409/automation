@@ -14,7 +14,7 @@ export default function OrderFulfillmentButton({ orderId, orderNumber }) {
   const fetch = useAuthenticatedFetch();
 
   const handleSendToAPG = async () => {
-    if (!confirm(`Are you sure you want to send order #${orderNumber} to APG? This will submit the order for fulfillment.`)) {
+    if (!confirm(`Are you sure you want to send order #${orderNumber || orderId} to APG? This will submit the order for fulfillment with all order information.`)) {
       return;
     }
 
@@ -22,12 +22,13 @@ export default function OrderFulfillmentButton({ orderId, orderNumber }) {
     setResult(null);
 
     try {
+      // Use JSON body for better compatibility
       const response = await fetch("/app/fulfill-order", {
         method: "POST",
         headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Type": "application/json",
         },
-        body: new URLSearchParams({
+        body: JSON.stringify({
           orderId: orderId,
         }),
       });
