@@ -1,0 +1,14 @@
+# Learn more about configuring your extension at https://shopify.dev/docs/apps/app-extensions/configuration
+
+api_version = "2025-01"
+
+[[extensions]]
+type = "admin_action"
+name = "Send Order to APG"
+handle = "order-fulfillment-button"
+
+[extensions.targeting]
+target = "admin.order-details.action.render"
+
+[extensions.capabilities]
+block_progress = true
