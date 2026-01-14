@@ -10,8 +10,17 @@ export async function action({ request }) {
   const { admin } = await authenticate.admin(request);
 
   try {
-    const formData = await request.formData();
-    const orderId = formData.get("orderId");
+    // Support both form data and JSON body
+    let orderId;
+    const contentType = request.headers.get("content-type");
+    
+    if (contentType?.includes("application/json")) {
+      const body = await request.json();
+      orderId = body.orderId;
+    } else {
+      const formData = await request.formData();
+      orderId = formData.get("orderId");
+    }
 
     if (!orderId) {
       return {

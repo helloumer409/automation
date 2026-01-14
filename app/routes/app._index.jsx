@@ -113,11 +113,25 @@ export default function Index() {
   const syncFetcher = useFetcher();
   const retryFetcher = useFetcher();
   const shopify = useAppBridge();
+  const [autoRefreshStats, setAutoRefreshStats] = useState(false);
+  const statsFetcher = useFetcher();
+  
   const isLoading =
     ["loading", "submitting"].includes(fetcher.state) &&
     fetcher.formMethod === "POST";
   const isSyncing = ["loading", "submitting"].includes(syncFetcher.state) &&
     syncFetcher.formMethod === "POST";
+
+  // Auto-refresh stats every 30 seconds when enabled
+  useEffect(() => {
+    if (!autoRefreshStats) return;
+    
+    const interval = setInterval(() => {
+      statsFetcher.load("/app");
+    }, 30000); // Refresh every 30 seconds
+    
+    return () => clearInterval(interval);
+  }, [autoRefreshStats, statsFetcher]);
 
   useEffect(() => {
     if (fetcher.data?.product?.id) {
@@ -164,29 +178,36 @@ export default function Index() {
           <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
             <s-text variant="headingMd">Total Products</s-text>
             <s-text variant="headingLg">{productStats.totalProducts.toLocaleString()}</s-text>
-            <s-text variant="bodySm" tone="subdued">{productStats.totalVariants.toLocaleString()} variants</s-text>
+            <s-text variant="bodySm" tone="subdued">{(statsFetcher.data?.productStats || productStats).totalVariants.toLocaleString()} variants</s-text>
           </s-box>
         </s-grid-item>
         
         <s-grid-item>
           <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
             <s-text variant="headingMd">Active Products</s-text>
-            <s-text variant="headingLg" tone="success">{productStats.activeProducts.toLocaleString()}</s-text>
+            <s-text variant="bodySm" tone="subdued">{(statsFetcher.data?.productStats || productStats).totalVariants.toLocaleString()} variants</s-text>
+          </s-box>
+        </s-grid-item>
+        
+        <s-grid-item>
+          <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+            <s-text variant="headingMd">Active Products</s-text>
+            <s-text variant="headingLg" tone="success">{(statsFetcher.data?.productStats || productStats).activeProducts.toLocaleString()}</s-text>
           </s-box>
         </s-grid-item>
         
         <s-grid-item>
           <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
             <s-text variant="headingMd">Draft Products</s-text>
-            <s-text variant="headingLg" tone="warning">{productStats.draftProducts.toLocaleString()}</s-text>
+            <s-text variant="headingLg" tone="warning">{(statsFetcher.data?.productStats || productStats).draftProducts.toLocaleString()}</s-text>
           </s-box>
         </s-grid-item>
         
         <s-grid-item>
           <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
             <s-text variant="headingMd">With Inventory</s-text>
-            <s-text variant="headingLg" tone="success">{productStats.productsWithInventory.toLocaleString()}</s-text>
-            <s-text variant="bodySm" tone="subdued">{productStats.inventoryStats.totalQuantity.toLocaleString()} total units</s-text>
+            <s-text variant="headingLg" tone="success">{(statsFetcher.data?.productStats || productStats).productsWithInventory.toLocaleString()}</s-text>
+            <s-text variant="bodySm" tone="subdued">{(statsFetcher.data?.productStats || productStats).inventoryStats.totalQuantity.toLocaleString()} total units</s-text>
           </s-box>
         </s-grid-item>
       </s-grid>
@@ -195,13 +216,13 @@ export default function Index() {
         <s-heading>🔗 APG Matching Status</s-heading>
         <s-grid columns="3">
           <s-grid-item>
-            <s-text variant="bodyMd"><strong>Matched with APG:</strong> {productStats.matchedWithAPG.toLocaleString()}</s-text>
+            <s-text variant="bodyMd"><strong>Matched with APG:</strong> {(statsFetcher.data?.productStats || productStats).matchedWithAPG.toLocaleString()}</s-text>
           </s-grid-item>
           <s-grid-item>
-            <s-text variant="bodyMd" tone="warning"><strong>Unmatched:</strong> {productStats.unmatchedWithAPG.toLocaleString()}</s-text>
+            <s-text variant="bodyMd" tone="warning"><strong>Unmatched:</strong> {(statsFetcher.data?.productStats || productStats).unmatchedWithAPG.toLocaleString()}</s-text>
           </s-grid-item>
           <s-grid-item>
-            <s-text variant="bodyMd" tone="info"><strong>MAP = 0 (Need Jobber):</strong> {productStats.mapZeroProducts.toLocaleString()}</s-text>
+            <s-text variant="bodyMd" tone="info"><strong>MAP = 0 (Need Jobber):</strong> {(statsFetcher.data?.productStats || productStats).mapZeroProducts.toLocaleString()}</s-text>
           </s-grid-item>
         </s-grid>
       </s-box>
