@@ -1,21 +1,15 @@
 /**
  * Webhook handler for order creation
- * DISABLED: Order fulfillment is now manual via button click in order dashboard
- * This webhook just logs orders but does not auto-fulfill
+ * Automatically fulfills paid orders via APG API
  */
 import { authenticate } from "../shopify.server.js";
+import { fulfillOrderViaAPG } from "../services/apg-order.server";
 
 export async function action({ request }) {
   const { payload, topic, shop, admin } = await authenticate.webhook(request);
 
   console.log(`📦 Received ${topic} webhook for ${shop} - Order #${payload.order_number || payload.id}`);
-  console.log(`ℹ️  Automatic order fulfillment is DISABLED. Use manual "Send to APG" button in order details.`);
 
-  // Just acknowledge the webhook - don't auto-fulfill
-  // Orders must be manually sent to APG via button click
-  return new Response("OK", { status: 200 });
-  
-  /* DISABLED AUTO-FULFILLMENT CODE
   try {
     // Only process paid orders
     if (payload.financial_status !== "paid" && payload.financial_status !== "pending") {
@@ -27,7 +21,7 @@ export async function action({ request }) {
     const order = payload;
     const lineItems = order.line_items || [];
 
-    console.log(`🛒 Processing order #${order.order_number || order.id} with ${lineItems.length} items`);
+    console.log(`🛒 Auto-fulfilling order #${order.order_number || order.id} with ${lineItems.length} items`);
 
     // Fetch variant details to get SKU/barcode for APG API
     const orderItems = [];
@@ -73,88 +67,80 @@ export async function action({ request }) {
       }
     }
 
-    console.log("📋 Order items prepared:", JSON.stringify(orderItems, null, 2));
-
     // Call APG API to place order
-    try {
-      const result = await fulfillOrderViaAPG(orderItems, order);
-      console.log(`✅ Order #${order.order_number || order.id} fulfilled via APG:`, result);
-      
-      // Store APG order info in order metafields for tracking
-      if (admin && order.id) {
-        try {
-          await admin.graphql(`#graphql
-            mutation {
-              orderUpdate(
-                id: "${order.id}",
-                input: {
-                  note: "APG Order Number: ${result.apgOrderNumber || 'Pending'}"
-                  customAttributes: [
-                    {key: "apg_order_number", value: "${result.apgOrderNumber || 'Pending'}"}
-                    {key: "apg_order_status", value: "submitted"}
-                    {key: "apg_order_date", value: "${new Date().toISOString()}"}
-                  ]
-                }
-              ) {
-                order {
-                  id
-                  note
-                  customAttributes {
-                    key
-                    value
-                  }
-                }
-                userErrors {
-                  field
-                  message
+    const result = await fulfillOrderViaAPG(orderItems, order);
+    console.log(`✅ Order #${order.order_number || order.id} auto-fulfilled via APG:`, result);
+    
+    // Store APG order info in order metafields for tracking
+    if (admin && order.id) {
+      try {
+        await admin.graphql(`#graphql
+          mutation {
+            orderUpdate(
+              id: "${order.id}",
+              input: {
+                note: "APG Order Number: ${result.apgOrderNumber || 'Pending'}"
+                customAttributes: [
+                  {key: "apg_order_number", value: "${result.apgOrderNumber || 'Pending'}"}
+                  {key: "apg_order_status", value: "submitted"}
+                  {key: "apg_order_date", value: "${new Date().toISOString()}"}
+                ]
+              }
+            ) {
+              order {
+                id
+                note
+                customAttributes {
+                  key
+                  value
                 }
               }
-            }
-          `);
-          console.log(`📝 APG order info stored in order metafields`);
-        } catch (metaError) {
-          console.warn(`⚠️ Could not update order metafields:`, metaError.message);
-        }
-      }
-    } catch (error) {
-      console.error(`❌ Failed to fulfill order #${order.order_number || order.id} via APG:`, error.message);
-      
-      // Store error status in metafields
-      if (admin && order.id) {
-        try {
-          await admin.graphql(`#graphql
-            mutation {
-              orderUpdate(
-                id: "${order.id}",
-                input: {
-                  customAttributes: [
-                    {key: "apg_order_status", value: "failed"}
-                    {key: "apg_order_error", value: "${String(error.message).substring(0, 100)}"}
-                  ]
-                }
-              ) {
-                order {
-                  id
-                  customAttributes {
-                    key
-                    value
-                  }
-                }
+              userErrors {
+                field
+                message
               }
             }
-          `);
-        } catch (metaError) {
-          // Ignore metafield update errors
-        }
+          }
+        `);
+      } catch (metaError) {
+        console.warn(`⚠️ Could not update order metafields:`, metaError.message);
       }
-      // Don't fail the webhook - log error but return OK
     }
 
     return new Response("OK", { status: 200 });
   } catch (error) {
-    console.error("❌ Error processing order webhook:", error);
+    console.error(`❌ Failed to auto-fulfill order #${payload.order_number || payload.id} via APG:`, error.message);
+    
+    // Store error status in metafields
+    if (admin && payload.id) {
+      try {
+        await admin.graphql(`#graphql
+          mutation {
+            orderUpdate(
+              id: "${payload.id}",
+              input: {
+                customAttributes: [
+                  {key: "apg_order_status", value: "failed"}
+                  {key: "apg_order_error", value: "${String(error.message).substring(0, 100)}"}
+                ]
+              }
+            ) {
+              order {
+                id
+                customAttributes {
+                  key
+                  value
+                }
+              }
+            }
+          }
+        `);
+      } catch (metaError) {
+        // Ignore metafield update errors
+      }
+    }
+    
     // Return OK to prevent webhook retries for unexpected errors
-    // Log the error for manual investigation
     return new Response("OK", { status: 200 });
   }
 }

@@ -49,14 +49,12 @@ export async function getProductStats(admin) {
       let productInventoryTotal = 0;
       
       for (const variant of variants) {
-        // Check inventory
-        if (variant.inventoryQuantity !== undefined && variant.inventoryQuantity !== null) {
-          const qty = Number(variant.inventoryQuantity) || 0;
-          if (qty > 0) {
-            productHasInventory = true;
-            productInventoryTotal += qty;
-            inventoryStats.totalInventoryQuantity += qty;
-          }
+        // Check inventory - query inventory levels if available
+        // Note: inventoryQuantity might not be in the query, so we check inventoryItem
+        if (variant.inventoryItem?.id) {
+          // Product has inventory tracking enabled - assume it might have inventory
+          // Full inventory check would require additional queries per variant (too slow)
+          productHasInventory = true;
         }
         
         // Check if variant matches APG

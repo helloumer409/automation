@@ -456,17 +456,11 @@ export async function syncAPGVariant({
     }
   }
   
-  /* 4️⃣ PRODUCT STATUS - Set matched products to ACTIVE (user requirement) */
-  // Products matched with APG → ACTIVE
-  // Note: Unmatched products are set to DRAFT in the main sync loop
-  if (productStatus && productStatus !== "ACTIVE") {
-    try {
-      // This product is matched (we're syncing it), so set to ACTIVE
-      await updateProductStatus(admin, productId, productStatus, true);
-    } catch (error) {
-      // Silent fail - status update is optional
-    }
-  }
+  /* 4️⃣ PRODUCT STATUS - Status is now handled at product level in sync loop */
+  // Status updates are done after checking all variants of a product
+  // This ensures products with ANY matching variant → ACTIVE
+  // Products with NO matching variants → DRAFT
+  // No status update needed here - handled in main sync loop
   
   // Removed cost logging to reduce spam
 }

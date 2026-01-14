@@ -156,9 +156,10 @@ export default function Index() {
 <s-page heading="CPG Automation Manager">
   
   {/* Product Statistics Section */}
-  {productStats && (
-    <s-section heading="📦 Store Product Statistics">
-      <s-grid columns="4">
+  <s-section heading="📦 Store Product Statistics">
+    {productStats ? (
+      <s-stack direction="block" gap="base">
+        <s-grid columns="4">
         <s-grid-item>
           <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
             <s-text variant="headingMd">Total Products</s-text>
@@ -204,8 +205,16 @@ export default function Index() {
           </s-grid-item>
         </s-grid>
       </s-box>
-    </s-section>
-  )}
+      </s-stack>
+    ) : (
+      <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+        <s-text variant="bodyMd">⏳ Loading product statistics...</s-text>
+        <s-text variant="bodySm" tone="subdued" style={{ marginTop: "0.5rem" }}>
+          This may take up to 30 seconds for stores with 22,000+ products. Please wait or refresh the page.
+        </s-text>
+      </s-box>
+    )}
+  </s-section>
 
   {/* Sync Statistics Section */}
   <s-section heading="📊 Last Sync Results">

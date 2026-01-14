@@ -43,8 +43,13 @@ async function performSync(admin, shop) {
 
   console.log(`🚀 Starting sync for ${shopifyProducts.length} products (${totalVariants} variants)...`);
 
-    for (const product of shopifyProducts) {
-      for (const variant of product.variants.nodes) {
+  // Track product-level matching (to determine if product should be ACTIVE or DRAFT)
+  const productMatchStatus = new Map(); // productId -> hasAnyMatch
+
+  for (const product of shopifyProducts) {
+    let productHasMatch = false; // Track if ANY variant in this product matches APG
+    
+    for (const variant of product.variants.nodes) {
       processedVariants++;
       
       // Log progress much less frequently to reduce Railway rate limits (every 20% instead of 10%)
@@ -53,10 +58,10 @@ async function performSync(admin, shop) {
         const progress = ((processedVariants / totalVariants) * 100).toFixed(1);
         console.log(`📊 Progress: ${processedVariants}/${totalVariants} (${progress}%) - Synced: ${synced}, Skipped: ${skipped}`);
       }
-        if (!variant.barcode) {
-          skipped++;
-          continue;
-        }
+      if (!variant.barcode) {
+        skipped++;
+        continue;
+      }
 
       // Try multiple barcode formats for matching
       const barcodeStr = String(variant.barcode).trim();
@@ -82,9 +87,9 @@ async function performSync(admin, shop) {
       }
       
       // Try SKU as fallback (before UPC variations)
-        if (!apgItem && variant.sku) {
-          apgItem = apgIndex.get(String(variant.sku).trim());
-        }
+      if (!apgItem && variant.sku) {
+        apgItem = apgIndex.get(String(variant.sku).trim());
+      }
 
       // Try matching by UPC variations if SKU/barcode didn't match
       if (!apgItem && variant.barcode) {
@@ -123,51 +128,63 @@ async function performSync(admin, shop) {
         if (!apgItem) {
           apgItem = apgIndex.get(skuStr);
         }
-        }
+      }
 
-        if (!apgItem) {
-          skipped++;
+      if (!apgItem) {
+        skipped++;
         // Only log missing matches much less frequently to reduce Railway rate limits
         if (skipped % 5000 === 0) {
           console.log(`⏭ ${skipped} products skipped (no APG match so far)`);
         }
-        
-        // Set unmatched products to DRAFT (user requirement)
-        // Only update once per product (not per variant) - track which products we've already updated
-        if (!productsSetToDraft.has(product.id) && product.status && product.status !== "DRAFT") {
-          try {
-            await updateProductStatus(admin, product.id, product.status, false); // false = set to DRAFT
-            productsSetToDraft.add(product.id);
-          } catch (error) {
-            // Silent fail - status update is optional
-          }
-        }
-        continue;
+        continue; // This variant doesn't match, but product might have other matching variants
       }
       
+      // This variant matches APG - mark product as having a match
+      productHasMatch = true;
+      productMatchStatus.set(product.id, true);
+    
       // Sync the variant - use static import to preserve admin context
-        try {
-          await syncAPGVariant({
-            admin,
-            productId: product.id,
-          productStatus: product.status, // Pass status for ACTIVE update (matched products)
-            variant: variant,
-            apgRow: apgItem,
+      try {
+        await syncAPGVariant({
+          admin,
+          productId: product.id,
+          variant: variant,
+          apgRow: apgItem,
         }, mapStats);
-          synced++;
-        
-        // Mark this product as matched (will be set to ACTIVE)
-        // Status update happens inside syncAPGVariant, but we track it here to avoid duplicate updates
-        productsStatusUpdated.add(product.id);
-        } catch (error) {
-          errors.push({
-            product: product.title,
-            variant: variant.sku || variant.barcode,
-            error: error.message
-          });
+        synced++;
+      } catch (error) {
+        errors.push({
+          product: product.title,
+          variant: variant.sku || variant.barcode,
+          error: error.message
+        });
         // Only log critical errors, not every sync error (reduces log spam)
         if (errors.length <= 10 || errors.length % 100 === 0) {
           console.error(`❌ Sync error for ${variant.sku || variant.barcode}: ${error.message}`);
+        }
+      }
+      }
+      
+      // After processing all variants, set product status based on whether ANY variant matched
+      // Products with ANY matching variant → ACTIVE
+      // Products with NO matching variants → DRAFT
+      if (!productMatchStatus.has(product.id)) {
+        productMatchStatus.set(product.id, false); // No matches found
+      }
+      
+      const hasAnyMatch = productMatchStatus.get(product.id);
+      
+      // Update product status: ACTIVE if matched, DRAFT if unmatched
+      if (!productsStatusUpdated.has(product.id) && !productsSetToDraft.has(product.id)) {
+        try {
+          await updateProductStatus(admin, product.id, product.status, hasAnyMatch);
+          if (hasAnyMatch) {
+            productsStatusUpdated.add(product.id);
+          } else {
+            productsSetToDraft.add(product.id);
+          }
+        } catch (error) {
+          // Silent fail - status update is optional
         }
       }
     }
@@ -194,10 +211,10 @@ async function performSync(admin, shop) {
     });
   }
 
-    return {
-      success: true,
-      synced,
-      skipped,
+  return {
+    success: true,
+    synced,
+    skipped,
     total: totalProcessed,
     successRate: `${successRate}%`,
     mapStats: {
@@ -244,9 +261,6 @@ export async function action({ request }) {
     };
   }
 }
-
-// Export performSync for use by automated sync endpoint
-export { performSync };
 
 // Export performSync for use by automated sync endpoint
 export { performSync };
