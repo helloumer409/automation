@@ -1,7 +1,7 @@
 import { getAPGIndex } from "./apg-lookup.server";
 import { getShopifyProducts } from "./shopify-products.server";
 import { syncAPGVariant, clearLocationCache, updateProductStatus } from "./apg-sync.server";
-import { saveSyncStats } from "./sync-stats.server";
+import { createSyncStatsRun, updateSyncStatsRun, completeSyncStatsRun } from "./sync-stats.server";
 
 /**
  * Internal function that performs the actual sync (shared by manual and automated sync)
@@ -39,6 +39,17 @@ export async function performSync(admin, shop) {
   let processedVariants = 0;
   const progressInterval = Math.max(1, Math.floor(totalVariants / 20)); // Log every 5%
 
+  // Create a running stats record so UI can show progress
+  let syncStatsId = null;
+  if (shop) {
+    const run = await createSyncStatsRun({
+      shop,
+      totalProducts: shopifyProducts.length,
+      totalVariants,
+    });
+    syncStatsId = run?.id || null;
+  }
+
   // Track which products we've already updated status for (to avoid duplicate updates)
   const productsStatusUpdated = new Set(); // Track products set to ACTIVE
   const productsSetToDraft = new Set(); // Track products set to DRAFT
@@ -59,6 +70,16 @@ export async function performSync(admin, shop) {
       if (processedVariants % progressInterval20 === 0 || processedVariants === totalVariants) {
         const progress = ((processedVariants / totalVariants) * 100).toFixed(1);
         console.log(`📊 Progress: ${processedVariants}/${totalVariants} (${progress}%) - Synced: ${synced}, Skipped: ${skipped}`);
+
+        // Update DB progress for UI if we have a stats record
+        if (syncStatsId) {
+          await updateSyncStatsRun(syncStatsId, {
+            synced,
+            skipped,
+            errors: errors.length,
+            mapStats,
+          });
+        }
       }
       if (!variant.barcode) {
         skipped++;
@@ -197,18 +218,16 @@ export async function performSync(admin, shop) {
   // Reduced logging to prevent Railway rate limits - single line summary
   console.log(`✅ SYNC COMPLETE: ${synced}/${totalProcessed} synced (${successRate}%), ${skipped} skipped, ${errors.length} errors | MAP:${mapStats.mapMatched} Jobber:${mapStats.mapUsedJobber} Retail:${mapStats.mapUsedRetail} Skipped:${mapStats.mapSkipped}`);
 
-  // Save stats to database
-  if (shop) {
-    await saveSyncStats({
-      shop,
-      totalProducts: shopifyProducts.length,
-      totalVariants,
+  // Save final stats to database / mark run completed
+  if (shop && syncStatsId) {
+    await completeSyncStatsRun(syncStatsId, {
       synced,
       skipped,
       errors: errors.length,
       successRate: `${successRate}%`,
       mapStats,
       status: "completed",
+      errorMessage: null,
     });
   }
 

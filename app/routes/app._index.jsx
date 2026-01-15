@@ -130,12 +130,15 @@ export const action = async ({ request }) => {
 export default function Index() {
   const { latestStats, productStats, autoSyncEnabled, autoSyncSchedule, recentOrders } = useLoaderData();
   const syncFetcher = useFetcher();
+  const progressFetcher = useFetcher();
   const retryFetcher = useFetcher();
   const fulfillFetcher = useFetcher();
   const shopify = useAppBridge();
   const [autoRefreshStats, setAutoRefreshStats] = useState(false);
   const statsFetcher = useFetcher();
   const [orderIdInput, setOrderIdInput] = useState("");
+  const [progressValue, setProgressValue] = useState(0);
+  const [progressLabel, setProgressLabel] = useState("");
   
   const isSyncing = ["loading", "submitting"].includes(syncFetcher.state) &&
     syncFetcher.formMethod === "POST";
@@ -161,6 +164,33 @@ export default function Index() {
     
     return () => clearInterval(interval);
   }, [autoRefreshStats, statsFetcher]);
+
+  // Poll sync progress while a sync is in progress
+  useEffect(() => {
+    if (syncFetcher.state !== "submitting" && syncFetcher.state !== "loading") {
+      return;
+    }
+
+    const poll = () => {
+      progressFetcher.load("/app/sync-progress");
+    };
+
+    // initial poll
+    poll();
+    const interval = setInterval(poll, 5000); // every 5 seconds
+    return () => clearInterval(interval);
+  }, [syncFetcher.state, progressFetcher]);
+
+  // Update local progress bar state when progress fetcher returns data
+  useEffect(() => {
+    if (progressFetcher.data?.success) {
+      const data = progressFetcher.data;
+      setProgressValue(data.progress || 0);
+      setProgressLabel(
+        `${data.progress || 0}% · Synced: ${data.synced || 0}, Skipped: ${data.skipped || 0}, Errors: ${data.errors || 0}`,
+      );
+    }
+  }, [progressFetcher.data]);
 
   useEffect(() => {
     if (syncFetcher.data?.success) {
@@ -391,9 +421,28 @@ export default function Index() {
       )}
     </s-stack>
     {isSyncing && (
-      <s-text variant="bodySm" tone="subdued">
-        Sync in progress... This may take several minutes for large catalogs. Do not close this page.
-      </s-text>
+      <div style={{ marginTop: "0.75rem" }}>
+        <div
+          style={{
+            height: "8px",
+            borderRadius: "4px",
+            background: "#f4f6f8",
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              height: "100%",
+              width: `${progressValue}%`,
+              background: "#bf0711", // red progress bar
+              transition: "width 0.5s ease-out",
+            }}
+          />
+        </div>
+        <s-text variant="bodySm" tone="subdued" style={{ marginTop: "0.25rem" }}>
+          Sync in progress... {progressLabel || "This may take several minutes for large catalogs. Do not close this page."}
+        </s-text>
+      </div>
     )}
     {latestStats && latestStats.skipped > 0 && (
       <s-text variant="bodySm" tone="info">
@@ -479,7 +528,7 @@ export default function Index() {
                 return (
                   <tr key={order.id}>
                     <td style={{ padding: "8px", borderBottom: "1px solid #f4f6f8" }}>
-                      <strong>{order.name || `#${order.orderNumber}`}</strong>
+                      <strong>{order.name}</strong>
                     </td>
                     <td style={{ padding: "8px", borderBottom: "1px solid #f4f6f8" }}>
                       {order.customer?.displayName || order.customer?.email || "Guest"}
@@ -503,7 +552,7 @@ export default function Index() {
                         loading={fulfillFetcher.state === "submitting"}
                         disabled={fulfillFetcher.state === "submitting"}
                         onClick={() => {
-                          if (!confirm(`Send order ${order.name || `#${order.orderNumber}`} to APG now?`)) {
+                          if (!confirm(`Send order ${order.name} to APG now?`)) {
                             return;
                           }
                           fulfillFetcher.submit(

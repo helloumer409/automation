@@ -1,6 +1,6 @@
 import { authenticate } from "../shopify.server";
 import { performSync } from "../services/sync.server";
-import { saveSyncStats } from "../services/sync-stats.server";
+import { createSyncStatsRun, completeSyncStatsRun } from "../services/sync-stats.server";
 
 export async function action({ request }) {
   const { admin, session } = await authenticate.admin(request);
@@ -14,18 +14,26 @@ export async function action({ request }) {
     
     // Save failed sync to database
     if (shop) {
-      await saveSyncStats({
-        shop,
-        totalProducts: 0,
-        totalVariants: 0,
-        synced: 0,
-        skipped: 0,
-        errors: 1,
-        successRate: "0%",
-        mapStats: {},
-        status: "failed",
-        errorMessage: error.message,
-      });
+      try {
+        const run = await createSyncStatsRun({
+          shop,
+          totalProducts: 0,
+          totalVariants: 0,
+        });
+        if (run?.id) {
+          await completeSyncStatsRun(run.id, {
+            synced: 0,
+            skipped: 0,
+            errors: 1,
+            successRate: "0%",
+            mapStats: {},
+            status: "failed",
+            errorMessage: error.message,
+          });
+        }
+      } catch (e) {
+        // Swallow stats errors so they don't mask the original sync failure
+      }
     }
     
     return {

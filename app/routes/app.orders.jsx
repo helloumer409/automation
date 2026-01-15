@@ -19,12 +19,13 @@ export const loader = async ({ request }) => {
 export default function OrdersPage() {
   const { recentOrders, error } = useLoaderData();
   const fulfillFetcher = useFetcher();
+  const [searchInput, setSearchInput] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
 
   const filteredOrders = (recentOrders || []).filter((order) => {
     if (!searchTerm.trim()) return true;
     const term = searchTerm.trim().toLowerCase();
-    const name = (order.name || `#${order.orderNumber || ""}`).toLowerCase();
+    const name = (order.name || "").toLowerCase();
     const email = (order.customer?.email || "").toLowerCase();
     const customer = (order.customer?.displayName || "").toLowerCase();
     return (
@@ -48,9 +49,9 @@ export default function OrdersPage() {
           <div style={{ marginBottom: "0.75rem", display: "flex", gap: "0.75rem", alignItems: "center" }}>
             <input
               type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search by order number or customer email..."
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search by order name (#1001) or customer email..."
               style={{
                 padding: "8px 10px",
                 minWidth: "260px",
@@ -58,11 +59,21 @@ export default function OrdersPage() {
                 border: "1px solid #c4cdd5",
               }}
             />
+            <s-button
+              size="slim"
+              variant="primary"
+              onClick={() => setSearchTerm(searchInput)}
+            >
+              Search
+            </s-button>
             {searchTerm && (
               <s-button
                 size="slim"
                 variant="secondary"
-                onClick={() => setSearchTerm("")}
+                onClick={() => {
+                  setSearchInput("");
+                  setSearchTerm("");
+                }}
               >
                 Clear
               </s-button>

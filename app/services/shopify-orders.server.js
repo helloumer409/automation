@@ -17,7 +17,6 @@ export async function getRecentOrders(admin, limit = 20) {
         nodes {
           id
           name
-          orderNumber
           createdAt
           displayFinancialStatus
           displayFulfillmentStatus

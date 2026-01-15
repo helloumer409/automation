@@ -1,12 +1,73 @@
 import db from "../db.server";
 
 /**
- * Saves sync statistics to database
+ * Creates a new sync stats run with status "running".
+ * Used at the start of a sync so progress can be updated while it runs.
  */
-export async function saveSyncStats({
+export async function createSyncStatsRun({
   shop,
   totalProducts,
   totalVariants,
+}) {
+  try {
+    const syncStats = await db.syncStats.create({
+      data: {
+        shop,
+        totalProducts,
+        totalVariants,
+        synced: 0,
+        skipped: 0,
+        errors: 0,
+        successRate: null,
+        mapMatched: 0,
+        mapUsedJobber: 0,
+        mapUsedRetail: 0,
+        mapSkipped: 0,
+        status: "running",
+        errorMessage: null,
+        syncCompletedAt: null,
+      },
+    });
+    return syncStats;
+  } catch (error) {
+    console.error("Failed to create sync stats run:", error);
+    return null;
+  }
+}
+
+/**
+ * Updates an existing sync stats run while it is in progress.
+ */
+export async function updateSyncStatsRun(id, {
+  synced,
+  skipped,
+  errors,
+  mapStats,
+}) {
+  try {
+    const syncStats = await db.syncStats.update({
+      where: { id },
+      data: {
+        synced,
+        skipped,
+        errors,
+        mapMatched: mapStats?.mapMatched ?? undefined,
+        mapUsedJobber: mapStats?.mapUsedJobber ?? undefined,
+        mapUsedRetail: mapStats?.mapUsedRetail ?? undefined,
+        mapSkipped: mapStats?.mapSkipped ?? undefined,
+      },
+    });
+    return syncStats;
+  } catch (error) {
+    console.error("Failed to update sync stats run:", error);
+    return null;
+  }
+}
+
+/**
+ * Marks a sync stats run as completed or failed with final numbers.
+ */
+export async function completeSyncStatsRun(id, {
   synced,
   skipped,
   errors,
@@ -16,19 +77,21 @@ export async function saveSyncStats({
   errorMessage = null,
 }) {
   try {
-    const syncStats = await db.syncStats.create({
+    const syncStats = await db.syncStats.update({
+      where: { id },
       data: {
-        shop,
-        totalProducts,
-        totalVariants,
         synced,
         skipped,
         errors,
-        successRate: successRate ? parseFloat(successRate.replace("%", "")) : null,
-        mapMatched: mapStats?.mapMatched || 0,
-        mapUsedJobber: mapStats?.mapUsedJobber || 0,
-        mapUsedRetail: mapStats?.mapUsedRetail || 0,
-        mapSkipped: mapStats?.mapSkipped || 0,
+        successRate: successRate != null
+          ? (typeof successRate === "string"
+              ? parseFloat(successRate.replace("%", ""))
+              : successRate)
+          : null,
+        mapMatched: mapStats?.mapMatched ?? undefined,
+        mapUsedJobber: mapStats?.mapUsedJobber ?? undefined,
+        mapUsedRetail: mapStats?.mapUsedRetail ?? undefined,
+        mapSkipped: mapStats?.mapSkipped ?? undefined,
         status,
         errorMessage,
         syncCompletedAt: new Date(),
@@ -36,7 +99,7 @@ export async function saveSyncStats({
     });
     return syncStats;
   } catch (error) {
-    console.error("Failed to save sync stats:", error);
+    console.error("Failed to complete sync stats run:", error);
     return null;
   }
 }
