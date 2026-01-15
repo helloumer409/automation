@@ -2,7 +2,7 @@ import { authenticate } from "../shopify.server";
 import { getAPGIndex } from "../services/apg-lookup.server";
 import { getShopifyProducts } from "../services/shopify-products.server";
 import { syncAPGVariant, clearLocationCache } from "../services/apg-sync.server";
-import { getLatestSyncStats, saveSyncStats } from "../services/sync-stats.server";
+import { getLatestSyncStats, createSyncStatsRun, completeSyncStatsRun } from "../services/sync-stats.server";
 
 /**
  * Retries sync for products that were skipped in the last sync
@@ -193,19 +193,29 @@ async function retrySkippedProducts(admin, shop) {
   console.log(`   • Used Jobber (MAP was 0): ${mapStats.mapUsedJobber}`);
   console.log(`   • Used Retail (MAP & Jobber were 0): ${mapStats.mapUsedRetail}`);
 
-  // Save stats to database
+  // Save stats to database (record this retry as a separate run)
   if (shop) {
-    await saveSyncStats({
-      shop,
-      totalProducts: shopifyProducts.length,
-      totalVariants,
-      synced,
-      skipped,
-      errors: errors.length,
-      successRate: `${successRate}%`,
-      mapStats,
-      status: "completed",
-    });
+    try {
+      const run = await createSyncStatsRun({
+        shop,
+        totalProducts: shopifyProducts.length,
+        totalVariants,
+      });
+      if (run?.id) {
+        await completeSyncStatsRun(run.id, {
+          synced,
+          skipped,
+          errors: errors.length,
+          successRate: `${successRate}%`,
+          mapStats,
+          status: "completed",
+          errorMessage: null,
+        });
+      }
+    } catch (e) {
+      // Log but don't fail the retry if stats save fails
+      console.error("Failed to save retry sync stats:", e);
+    }
   }
 
   return {
@@ -238,18 +248,26 @@ export async function action({ request }) {
     
     // Save failed retry to database
     if (shop) {
-      await saveSyncStats({
-        shop,
-        totalProducts: 0,
-        totalVariants: 0,
-        synced: 0,
-        skipped: 0,
-        errors: 1,
-        successRate: "0%",
-        mapStats: {},
-        status: "failed",
-        errorMessage: error.message,
-      });
+      try {
+        const run = await createSyncStatsRun({
+          shop,
+          totalProducts: 0,
+          totalVariants: 0,
+        });
+        if (run?.id) {
+          await completeSyncStatsRun(run.id, {
+            synced: 0,
+            skipped: 0,
+            errors: 1,
+            successRate: "0%",
+            mapStats: {},
+            status: "failed",
+            errorMessage: error.message,
+          });
+        }
+      } catch (e) {
+        // ignore stats errors here
+      }
     }
     
     return {
