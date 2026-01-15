@@ -129,7 +129,6 @@ export const action = async ({ request }) => {
 
 export default function Index() {
   const { latestStats, productStats, autoSyncEnabled, autoSyncSchedule, recentOrders } = useLoaderData();
-  const fetcher = useFetcher();
   const syncFetcher = useFetcher();
   const retryFetcher = useFetcher();
   const fulfillFetcher = useFetcher();
@@ -138,9 +137,6 @@ export default function Index() {
   const statsFetcher = useFetcher();
   const [orderIdInput, setOrderIdInput] = useState("");
   
-  const isLoading =
-    ["loading", "submitting"].includes(fetcher.state) &&
-    fetcher.formMethod === "POST";
   const isSyncing = ["loading", "submitting"].includes(syncFetcher.state) &&
     syncFetcher.formMethod === "POST";
 
@@ -167,12 +163,6 @@ export default function Index() {
   }, [autoRefreshStats, statsFetcher]);
 
   useEffect(() => {
-    if (fetcher.data?.product?.id) {
-      shopify.toast.show("Product created");
-    }
-  }, [fetcher.data?.product?.id, shopify]);
-
-  useEffect(() => {
     if (syncFetcher.data?.success) {
       shopify.toast.show(syncFetcher.data.message || "Sync completed successfully!");
     } else if (syncFetcher.data?.error) {
@@ -190,7 +180,6 @@ export default function Index() {
     }
   }, [retryFetcher.data, shopify]);
 
-  const generateProduct = () => fetcher.submit({}, { method: "POST" });
   const startSync = () => syncFetcher.submit({}, { method: "post", action: "/app/sync-apg" });
 
   // Display sync stats from latest sync, retry, or current sync
@@ -549,44 +538,10 @@ export default function Index() {
     </s-box>
   </s-section>
 
-<s-button
-  variant="secondary"
-  onClick={() => {
-    if (confirm("Are you sure you want to remove all compareAtPrice from all products? This cannot be undone.")) {
-      fetcher.submit({}, { method: "post", action: "/app/remove-compare-price" });
-    }
-  }}
->
-  Remove All Compare At Prices
-</s-button>
-
-
-
-      <s-button slot="primary-action" onClick={generateProduct}>
-        Generate a product
-      </s-button>
-
-     <s-section heading="Welcome to CPG Automation">
-  <s-paragraph>
-    Manage, automate, and optimize your products directly from Shopify Admin.
-  </s-paragraph>
-</s-section>
-
-      <s-section heading="Get started with products">
+      <s-section heading="Welcome to CPG Automation">
         <s-paragraph>
-          Generate a product with GraphQL and get the JSON output for that
-          product. Learn more about the{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate"
-            target="_blank"
-          >
-            productCreate
-          </s-link>{" "}
-          mutation in our API references.
+          Manage, automate, and optimize your APG inventory, pricing, and orders directly from Shopify Admin.
         </s-paragraph>
-        <s-stack direction="inline" gap="base">
-          <s-button
-            onClick={generateProduct}
             {...(isLoading ? { loading: true } : {})}
           >
             Generate a product

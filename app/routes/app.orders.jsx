@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useFetcher, useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import { getRecentOrders } from "../services/shopify-orders.server";
@@ -6,20 +7,69 @@ export const loader = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
 
   // Load a larger slice of recent orders for the dedicated Orders page
-  const recentOrders = await getRecentOrders(admin, 50);
-
-  return { recentOrders };
+  try {
+    const recentOrders = await getRecentOrders(admin, 50);
+    return { recentOrders, error: null };
+  } catch (error) {
+    console.log("❌ Failed to load recent orders for Orders page:", error.message);
+    return { recentOrders: [], error: error.message || "Failed to load orders" };
+  }
 };
 
 export default function OrdersPage() {
-  const { recentOrders } = useLoaderData();
+  const { recentOrders, error } = useLoaderData();
   const fulfillFetcher = useFetcher();
+  const [searchTerm, setSearchTerm] = useState("");
+
+  const filteredOrders = (recentOrders || []).filter((order) => {
+    if (!searchTerm.trim()) return true;
+    const term = searchTerm.trim().toLowerCase();
+    const name = (order.name || `#${order.orderNumber || ""}`).toLowerCase();
+    const email = (order.customer?.email || "").toLowerCase();
+    const customer = (order.customer?.displayName || "").toLowerCase();
+    return (
+      name.includes(term) ||
+      email.includes(term) ||
+      customer.includes(term)
+    );
+  });
 
   return (
     <s-page heading="Orders → APG Fulfillment">
       <s-section heading="📃 Recent Shopify Orders">
         <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
-          {recentOrders && recentOrders.length > 0 ? (
+          {error && (
+            <s-text variant="bodySm" tone="critical" style={{ marginBottom: "0.75rem" }}>
+              Failed to load orders: {error}
+            </s-text>
+          )}
+
+          {/* Search bar */}
+          <div style={{ marginBottom: "0.75rem", display: "flex", gap: "0.75rem", alignItems: "center" }}>
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search by order number or customer email..."
+              style={{
+                padding: "8px 10px",
+                minWidth: "260px",
+                borderRadius: "4px",
+                border: "1px solid #c4cdd5",
+              }}
+            />
+            {searchTerm && (
+              <s-button
+                size="slim"
+                variant="secondary"
+                onClick={() => setSearchTerm("")}
+              >
+                Clear
+              </s-button>
+            )}
+          </div>
+
+          {filteredOrders && filteredOrders.length > 0 ? (
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "700px" }}>
                 <thead>
