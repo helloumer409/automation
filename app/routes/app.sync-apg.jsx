@@ -1,5 +1,6 @@
 import { authenticate } from "../shopify.server";
 import { performSync } from "../services/sync.server";
+import { saveSyncStats } from "../services/sync-stats.server";
 
 export async function action({ request }) {
   const { admin, session } = await authenticate.admin(request);

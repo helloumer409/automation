@@ -11,10 +11,11 @@ import shopify from "../shopify.server";
  * 1. Set SHOPIFY_CRON_SECRET in Railway environment variables
  * 2. Add cron job in Railway: https://docs.railway.app/develop/cron
  *    Schedule: "0 *\/6 * * *" (every 6 hours) or "0 * * * *" (every hour)
- *    Command: curl -X POST https://your-app.railway.app/cron/sync-apg?secret=YOUR_SECRET
+ *    Command: curl "https://your-app.railway.app/cron/sync-apg?secret=YOUR_SECRET"
  * 
  * Or use this endpoint directly with a secret query parameter
  */
+// GET handler (used by Railway Cron and browser/debug)
 export async function loader({ request }) {
   const url = new URL(request.url);
   const secret = url.searchParams.get("secret");
@@ -125,4 +126,9 @@ export async function loader({ request }) {
       headers: { "Content-Type": "application/json" },
     });
   }
+}
+
+// Optional POST handler so you can also trigger via POST if desired
+export async function action({ request }) {
+  return loader({ request });
 }
