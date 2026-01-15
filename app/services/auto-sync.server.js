@@ -57,7 +57,8 @@ export function startAutoSync() {
 
       // Import here to avoid circular dependencies
       const { performSync } = await import("./sync.server");
-      const shopify = await import("../shopify.server").then(m => m.default);
+      const shopifyModule = await import("../shopify.server");
+      const shopify = shopifyModule.default;
 
       for (const session of sessions) {
         try {
@@ -79,10 +80,12 @@ export function startAutoSync() {
           }
 
           // Create admin context using session
-          // Note: This uses the session's access token directly
-          const admin = shopify.clients.admin({
-            session: fullSession,
-          });
+          // New Shopify app API exposes clients under shopify.api.clients
+          const AdminApiClient = shopify.api?.clients?.Admin;
+          if (!AdminApiClient) {
+            throw new Error("Shopify Admin API client is not available on shopify.api.clients.Admin");
+          }
+          const admin = new AdminApiClient({ session: fullSession });
 
           // Run sync
           await performSync(admin, session.shop);
