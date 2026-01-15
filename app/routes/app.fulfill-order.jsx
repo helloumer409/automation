@@ -29,12 +29,19 @@ export async function action({ request }) {
       };
     }
 
-    console.log(`📤 Manual order fulfillment requested for order: ${orderId}`);
+    // Support both raw numeric ID from Admin URL and full GraphQL ID
+    let gqlOrderId = String(orderId).trim();
+    if (!gqlOrderId.startsWith("gid://")) {
+      // Treat value like 6409159213100 as Shopify Order numeric ID
+      gqlOrderId = `gid://shopify/Order/${gqlOrderId}`;
+    }
+
+    console.log(`📤 Manual order fulfillment requested for order: ${gqlOrderId}`);
 
     // Fetch order details from Shopify
     const orderResponse = await admin.graphql(`#graphql
       query {
-        order(id: "${orderId}") {
+        order(id: "${gqlOrderId}") {
           id
           name
           orderNumber
@@ -130,7 +137,7 @@ export async function action({ request }) {
       await admin.graphql(`#graphql
         mutation {
           orderUpdate(
-            id: "${order.id}",
+            id: "${gqlOrderId}",
             input: {
               note: "APG Order Number: ${result.apgOrderNumber}"
               customAttributes: [

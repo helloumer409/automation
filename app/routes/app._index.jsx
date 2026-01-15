@@ -5,6 +5,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { getLatestSyncStats } from "../services/sync-stats.server";
 import { getProductStats } from "../services/product-stats.server";
+import { getRecentOrders } from "../services/shopify-orders.server";
 
 
 export const loader = async ({ request }) => {
@@ -13,6 +14,15 @@ export const loader = async ({ request }) => {
   
   // Get latest sync stats
   const latestStats = await getLatestSyncStats(shop);
+
+  // Get recent orders (keep list small to avoid heavy memory usage)
+  let recentOrders = [];
+  try {
+    recentOrders = await getRecentOrders(admin, 20);
+  } catch (error) {
+    console.log("ℹ️ Recent orders load failed:", error.message);
+    recentOrders = [];
+  }
   
   // Get comprehensive product stats
   // For large stores (22k+ products), stats can take 60+ seconds
@@ -48,6 +58,7 @@ export const loader = async ({ request }) => {
     productStats,
     autoSyncEnabled,
     autoSyncSchedule,
+    recentOrders,
   };
 };
 
@@ -117,13 +128,15 @@ export const action = async ({ request }) => {
 };
 
 export default function Index() {
-  const { latestStats, productStats, autoSyncEnabled, autoSyncSchedule } = useLoaderData();
+  const { latestStats, productStats, autoSyncEnabled, autoSyncSchedule, recentOrders } = useLoaderData();
   const fetcher = useFetcher();
   const syncFetcher = useFetcher();
   const retryFetcher = useFetcher();
+  const fulfillFetcher = useFetcher();
   const shopify = useAppBridge();
   const [autoRefreshStats, setAutoRefreshStats] = useState(false);
   const statsFetcher = useFetcher();
+  const [orderIdInput, setOrderIdInput] = useState("");
   
   const isLoading =
     ["loading", "submitting"].includes(fetcher.state) &&
@@ -400,16 +413,141 @@ export default function Index() {
     )}
   </s-section>
 
-<s-button
-  variant="secondary"
-  onClick={() => {
-    if (confirm("Are you sure you want to remove all compareAtPrice from all products? This cannot be undone.")) {
-      fetcher.submit({}, { method: "post", action: "/app/remove-compare-price" });
-    }
-  }}
->
-  Remove All Compare At Prices
-</s-button>
+  {/* Orders → Send to APG */}
+  <s-section heading="🧾 Orders → Send to APG">
+    <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+      <s-stack direction="block" gap="base">
+        <s-text variant="bodyMd">
+          Enter the Shopify Order ID from the URL (for example, for{" "}
+          <code>.../orders/6409159213100</code> paste <code>6409159213100</code> here),
+          then click <strong>Send Order to APG</strong>.
+        </s-text>
+
+        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+          <input
+            type="text"
+            value={orderIdInput}
+            onChange={(e) => setOrderIdInput(e.target.value)}
+            placeholder="6409159213100 or full GraphQL ID"
+            style={{
+              padding: "8px 10px",
+              minWidth: "260px",
+              borderRadius: "4px",
+              border: "1px solid #c4cdd5",
+            }}
+          />
+          <s-button
+            variant="primary"
+            loading={fulfillFetcher.state === "submitting"}
+            disabled={fulfillFetcher.state === "submitting" || !orderIdInput.trim()}
+            onClick={() => {
+              if (!orderIdInput.trim()) return;
+              if (!confirm(`Send order ${orderIdInput.trim()} to APG now?`)) return;
+              fulfillFetcher.submit(
+                { orderId: orderIdInput.trim() },
+                { method: "post", action: "/app/fulfill-order" }
+              );
+            }}
+          >
+            {fulfillFetcher.state === "submitting" ? "Sending to APG..." : "Send Order to APG"}
+          </s-button>
+        </div>
+
+        {fulfillFetcher.data && (
+          <s-text
+            variant="bodySm"
+            tone={fulfillFetcher.data.success ? "success" : "critical"}
+          >
+            {fulfillFetcher.data.message || fulfillFetcher.data.error}
+          </s-text>
+        )}
+      </s-stack>
+    </s-box>
+  </s-section>
+
+  {/* Recent Shopify Orders */}
+  <s-section heading="📃 Recent Shopify Orders">
+    <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
+      {recentOrders && recentOrders.length > 0 ? (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: "600px" }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", padding: "8px", borderBottom: "1px solid #dfe3e8" }}>Order</th>
+                <th style={{ textAlign: "left", padding: "8px", borderBottom: "1px solid #dfe3e8" }}>Customer</th>
+                <th style={{ textAlign: "left", padding: "8px", borderBottom: "1px solid #dfe3e8" }}>Created</th>
+                <th style={{ textAlign: "left", padding: "8px", borderBottom: "1px solid #dfe3e8" }}>Total</th>
+                <th style={{ textAlign: "left", padding: "8px", borderBottom: "1px solid #dfe3e8" }}>Status</th>
+                <th style={{ textAlign: "left", padding: "8px", borderBottom: "1px solid #dfe3e8" }}>APG</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentOrders.map((order) => {
+                const total = order.totalPriceSet?.shopMoney;
+                const created = order.createdAt
+                  ? new Date(order.createdAt).toLocaleString()
+                  : "";
+                return (
+                  <tr key={order.id}>
+                    <td style={{ padding: "8px", borderBottom: "1px solid #f4f6f8" }}>
+                      <strong>{order.name || `#${order.orderNumber}`}</strong>
+                    </td>
+                    <td style={{ padding: "8px", borderBottom: "1px solid #f4f6f8" }}>
+                      {order.customer?.displayName || order.customer?.email || "Guest"}
+                    </td>
+                    <td style={{ padding: "8px", borderBottom: "1px solid #f4f6f8" }}>{created}</td>
+                    <td style={{ padding: "8px", borderBottom: "1px solid #f4f6f8" }}>
+                      {total ? `${Number(total.amount).toFixed(2)} ${total.currencyCode}` : "-"}
+                    </td>
+                    <td style={{ padding: "8px", borderBottom: "1px solid #f4f6f8" }}>
+                      <div>
+                        <div>{order.displayFinancialStatus || "-"}</div>
+                        <div style={{ fontSize: "11px", color: "#637381" }}>
+                          {order.displayFulfillmentStatus || ""}
+                        </div>
+                      </div>
+                    </td>
+                    <td style={{ padding: "8px", borderBottom: "1px solid #f4f6f8" }}>
+                      <s-button
+                        size="slim"
+                        variant="primary"
+                        loading={fulfillFetcher.state === "submitting"}
+                        disabled={fulfillFetcher.state === "submitting"}
+                        onClick={() => {
+                          if (!confirm(`Send order ${order.name || `#${order.orderNumber}`} to APG now?`)) {
+                            return;
+                          }
+                          fulfillFetcher.submit(
+                            { orderId: order.id },
+                            { method: "post", action: "/app/fulfill-order" }
+                          );
+                        }}
+                      >
+                        {fulfillFetcher.state === "submitting" ? "Sending..." : "Send to APG"}
+                      </s-button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {fulfillFetcher.data && (
+            <s-text
+              variant="bodySm"
+              tone={fulfillFetcher.data.success ? "success" : "critical"}
+              style={{ marginTop: "0.75rem" }}
+            >
+              {fulfillFetcher.data.message || fulfillFetcher.data.error}
+            </s-text>
+          )}
+        </div>
+      ) : (
+        <s-text tone="subdued">
+          No recent orders found or unable to load orders. Make sure the app has read_orders access.
+        </s-text>
+      )}
+    </s-box>
+  </s-section>
 
 <s-button
   variant="secondary"
@@ -421,6 +559,8 @@ export default function Index() {
 >
   Remove All Compare At Prices
 </s-button>
+
+
 
       <s-button slot="primary-action" onClick={generateProduct}>
         Generate a product
