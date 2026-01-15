@@ -52,7 +52,7 @@ export async function performSync(admin, shop) {
   const productsStatusUpdated = new Set(); // Track products set to ACTIVE
   const productsSetToDraft = new Set(); // Track products set to DRAFT
 
-  console.log(`🚀 Starting sync for ${shopifyProducts.length} products (${totalVariants} variants)...`);
+  console.log(`🚀 Starting sync for ${totalProducts} products (${totalVariants} variants)...`);
 
   // Stream products one-by-one to avoid holding entire catalog in memory
   await forEachShopifyProduct(admin, async (product) => {
