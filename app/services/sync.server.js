@@ -1,5 +1,5 @@
 import { getAPGIndex } from "./apg-lookup.server";
-import { getShopifyProducts } from "./shopify-products.server";
+import { countShopifyCatalog, forEachShopifyProduct } from "./shopify-products.server";
 import { syncAPGVariant, clearLocationCache, updateProductStatus } from "./apg-sync.server";
 import { createSyncStatsRun, updateSyncStatsRun, completeSyncStatsRun } from "./sync-stats.server";
 
@@ -17,9 +17,9 @@ export async function performSync(admin, shop) {
   const apgIndex = await getAPGIndex();
   console.log(`✅ APG index loaded: ${apgIndex.size} items`);
   
-  console.log("📦 Fetching Shopify products...");
-  const shopifyProducts = await getShopifyProducts(admin);
-  console.log(`✅ Fetched ${shopifyProducts.length} products from Shopify`);
+  console.log("📦 Counting Shopify products/variants for sync...");
+  const { totalProducts, totalVariants } = await countShopifyCatalog(admin);
+  console.log(`✅ Catalog count: ${totalProducts} products (${totalVariants} variants)`);
 
   let synced = 0;
   let skipped = 0;
@@ -34,8 +34,6 @@ export async function performSync(admin, shop) {
     mapSkippedReasons: []
   };
 
-  // Calculate total variants for progress tracking
-  const totalVariants = shopifyProducts.reduce((sum, p) => sum + (p.variants?.nodes?.length || 0), 0);
   let processedVariants = 0;
   const progressInterval = Math.max(1, Math.floor(totalVariants / 20)); // Log every 5%
 
@@ -44,7 +42,7 @@ export async function performSync(admin, shop) {
   if (shop) {
     const run = await createSyncStatsRun({
       shop,
-      totalProducts: shopifyProducts.length,
+      totalProducts,
       totalVariants,
     });
     syncStatsId = run?.id || null;
@@ -56,10 +54,8 @@ export async function performSync(admin, shop) {
 
   console.log(`🚀 Starting sync for ${shopifyProducts.length} products (${totalVariants} variants)...`);
 
-  // Track product-level matching (to determine if product should be ACTIVE or DRAFT)
-  const productMatchStatus = new Map(); // productId -> hasAnyMatch
-
-  for (const product of shopifyProducts) {
+  // Stream products one-by-one to avoid holding entire catalog in memory
+  await forEachShopifyProduct(admin, async (product) => {
     let productHasMatch = false; // Track if ANY variant in this product matches APG
     
     for (const variant of product.variants.nodes) {
@@ -164,7 +160,6 @@ export async function performSync(admin, shop) {
       
       // This variant matches APG - mark product as having a match
       productHasMatch = true;
-      productMatchStatus.set(product.id, true);
     
       // Sync the variant - use static import to preserve admin context
       try {
@@ -187,15 +182,10 @@ export async function performSync(admin, shop) {
         }
       }
     }
-      
     // After processing all variants, set product status based on whether ANY variant matched
     // Products with ANY matching variant → ACTIVE
     // Products with NO matching variants → DRAFT
-    if (!productMatchStatus.has(product.id)) {
-      productMatchStatus.set(product.id, false); // No matches found
-    }
-    
-    const hasAnyMatch = productMatchStatus.get(product.id);
+    const hasAnyMatch = productHasMatch;
     
     // Update product status: ACTIVE if matched, DRAFT if unmatched
     if (!productsStatusUpdated.has(product.id) && !productsSetToDraft.has(product.id)) {
@@ -210,7 +200,7 @@ export async function performSync(admin, shop) {
         // Silent fail - status update is optional
       }
     }
-  }
+  });
 
   const totalProcessed = synced + skipped;
   const successRate = totalProcessed > 0 ? ((synced / totalProcessed) * 100).toFixed(1) : 0;
