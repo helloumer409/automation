@@ -31,6 +31,10 @@ export async function getRecentOrders(admin, limit = 20) {
             displayName
             email
           }
+          customAttributes {
+            key
+            value
+          }
         }
       }
     }
