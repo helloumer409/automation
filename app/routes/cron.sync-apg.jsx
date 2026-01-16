@@ -74,15 +74,24 @@ export async function loader({ request }) {
           results.push({
             shop,
             status: "error",
-            error: "No valid session with access token found",
+            error: "No valid session with access token found - app may need to be reinstalled/reauthorized",
           });
+          console.error(`⚠️ Session expired or missing for ${shop}. User needs to reinstall/reauthorize the app.`);
           continue;
         }
+        
+        // Check if session is about to expire (within 1 hour)
+        if (fullSession.expires && new Date(fullSession.expires).getTime() - Date.now() < 3600000) {
+          console.warn(`⚠️ Session for ${shop} expires soon (within 1 hour). Consider refreshing token.`);
+        }
 
-        // Create admin context using the session's access token
-        const admin = shopify.clients.admin({
-          session: fullSession,
-        });
+        // Create admin context using the session
+        // New Shopify app API exposes clients under shopify.api.clients
+        const AdminApiClient = shopify.api?.clients?.Admin;
+        if (!AdminApiClient) {
+          throw new Error("Shopify Admin API client is not available on shopify.api.clients.Admin");
+        }
+        const admin = new AdminApiClient({ session: fullSession });
 
         // Actually call performSync to run the sync
         const syncResult = await performSync(admin, shop);

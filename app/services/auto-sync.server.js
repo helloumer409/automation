@@ -75,8 +75,13 @@ export function startAutoSync() {
           });
 
           if (!fullSession || !fullSession.accessToken) {
-            console.log(`⚠️ No valid session found for ${session.shop}`);
+            console.error(`⚠️ No valid session found for ${session.shop} - app may need to be reinstalled/reauthorized`);
             continue;
+          }
+          
+          // Check if session is about to expire (within 1 hour)
+          if (fullSession.expires && new Date(fullSession.expires).getTime() - Date.now() < 3600000) {
+            console.warn(`⚠️ Session for ${session.shop} expires soon (within 1 hour). Consider refreshing token.`);
           }
 
           // Create admin context using session

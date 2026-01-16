@@ -9,8 +9,27 @@ import { getRecentOrders } from "../services/shopify-orders.server";
 
 
 export const loader = async ({ request }) => {
-  const { admin, session } = await authenticate.admin(request);
-  const shop = session.shop;
+  let admin, session, shop;
+  
+  try {
+    const authResult = await authenticate.admin(request);
+    admin = authResult.admin;
+    session = authResult.session;
+    shop = session.shop;
+  } catch (error) {
+    console.error("❌ Authentication failed in app._index loader:", error);
+    // Re-throw with user-friendly error
+    throw new Response(
+      JSON.stringify({
+        error: "Authentication failed",
+        message: "Your session has expired. Please reinstall the app from your Shopify admin.",
+      }),
+      {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  }
   
   // Get latest sync stats
   const latestStats = await getLatestSyncStats(shop);
