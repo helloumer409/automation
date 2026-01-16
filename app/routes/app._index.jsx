@@ -165,21 +165,18 @@ export default function Index() {
     return () => clearInterval(interval);
   }, [autoRefreshStats, statsFetcher]);
 
-  // Poll sync progress while a sync is in progress
+  // Poll sync progress while a sync is in progress (manual or auto-sync)
   useEffect(() => {
-    if (syncFetcher.state !== "submitting" && syncFetcher.state !== "loading") {
-      return;
-    }
-
     const poll = () => {
       progressFetcher.load("/app/sync-progress");
     };
 
-    // initial poll
+    // Initial poll on page load to check for auto-sync progress
     poll();
-    const interval = setInterval(poll, 5000); // every 5 seconds
+    // Poll every 5 seconds to catch auto-sync progress even if user didn't click manual sync
+    const interval = setInterval(poll, 5000);
     return () => clearInterval(interval);
-  }, [syncFetcher.state, progressFetcher]);
+  }, [progressFetcher]);
 
   // Update local progress bar state when progress fetcher returns data
   useEffect(() => {
@@ -381,6 +378,35 @@ export default function Index() {
           <s-text variant="bodySm" tone="subdued">
             ⚠️ Auto-sync is disabled. Set AUTO_SYNC_DISABLED=false or remove it to enable (default: every 6 hours)
           </s-text>
+        )}
+        
+        {/* Show progress bar if auto-sync is running (status is "running") */}
+        {autoSyncEnabled && progressFetcher.data?.success && progressFetcher.data?.status === "running" && (
+          <div style={{ marginTop: "0.75rem" }}>
+            <s-text variant="bodySm" tone="info" style={{ marginBottom: "0.5rem" }}>
+              🔄 Auto-sync in progress...
+            </s-text>
+            <div
+              style={{
+                height: "8px",
+                borderRadius: "4px",
+                background: "#f4f6f8",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${progressFetcher.data.progress || 0}%`,
+                  background: "#bf0711", // red progress bar
+                  transition: "width 0.5s ease-out",
+                }}
+              />
+            </div>
+            <s-text variant="bodySm" tone="subdued" style={{ marginTop: "0.25rem" }}>
+              {progressFetcher.data.progress || 0}% · Synced: {progressFetcher.data.synced || 0}, Skipped: {progressFetcher.data.skipped || 0}, Errors: {progressFetcher.data.errors || 0}
+            </s-text>
+          </div>
         )}
       </s-stack>
     </s-box>

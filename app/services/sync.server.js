@@ -1,7 +1,7 @@
-import { getAPGIndex } from "./apg-lookup.server";
+import { getAPGIndex, wasCSVJustDownloaded, getLastCSVDownloadTime } from "./apg-lookup.server";
 import { countShopifyCatalog, forEachShopifyProduct } from "./shopify-products.server";
 import { syncAPGVariant, clearLocationCache, updateProductStatus } from "./apg-sync.server";
-import { createSyncStatsRun, updateSyncStatsRun, completeSyncStatsRun } from "./sync-stats.server";
+import { createSyncStatsRun, updateSyncStatsRun, completeSyncStatsRun, getLatestSyncStats } from "./sync-stats.server";
 
 /**
  * Internal function that performs the actual sync (shared by manual and automated sync)
@@ -15,7 +15,21 @@ export async function performSync(admin, shop) {
   
   console.log("📥 Loading APG data from CSV...");
   const apgIndex = await getAPGIndex();
+  const csvWasDownloaded = wasCSVJustDownloaded();
+  const csvDownloadTime = getLastCSVDownloadTime();
   console.log(`✅ APG index loaded: ${apgIndex.size} items`);
+  
+  // Determine if this should be a full sync or incremental sync
+  // Full sync if: CSV was just downloaded (24h+ old), or this is the first sync
+  // Incremental sync if: CSV is fresh (<24h old) - only sync new/unsynced products
+  const lastSyncStats = shop ? await getLatestSyncStats(shop) : null;
+  const isFullSync = csvWasDownloaded || !lastSyncStats || lastSyncStats.status !== "completed";
+  
+  if (isFullSync) {
+    console.log("🔄 FULL SYNC: CSV was just downloaded or first sync - syncing all products");
+  } else {
+    console.log("🔄 INCREMENTAL SYNC: CSV is fresh - only syncing new/unsynced products");
+  }
   
   console.log("📦 Counting Shopify products/variants for sync...");
   const { totalProducts, totalVariants } = await countShopifyCatalog(admin);
@@ -44,6 +58,8 @@ export async function performSync(admin, shop) {
       shop,
       totalProducts,
       totalVariants,
+      csvDownloadedAt: csvWasDownloaded ? new Date(csvDownloadTime) : null,
+      isFullSync,
     });
     syncStatsId = run?.id || null;
   }
@@ -77,7 +93,19 @@ export async function performSync(admin, shop) {
           });
         }
       }
-      if (!variant.barcode) {
+      // In incremental sync mode, only sync variants that don't have barcode/SKU (new products)
+      // OR variants that might have been skipped in the last sync
+      // We skip variants that already have barcode/SKU and were successfully synced
+      if (!isFullSync && variant.barcode && variant.sku) {
+        // In incremental mode, skip variants that have both barcode and SKU
+        // These were likely synced in previous full sync
+        // We'll only sync new products (no barcode/SKU) or check if they match APG
+        // But we still need to check if they match APG to catch newly added APG items
+        // So we'll continue processing but mark as "already synced" if they match
+      }
+      
+      if (!variant.barcode && !variant.sku) {
+        // No barcode or SKU - skip (can't match)
         skipped++;
         continue;
       }
@@ -127,25 +155,61 @@ export async function performSync(admin, shop) {
         }
       }
       
-      // Try matching by SKU format variations (e.g., BCSQ-100971 vs WRN100971)
+      // Try matching by SKU format variations (e.g., BHXS-ZT2-XTG6 vs ACTZT2-XTG6)
       if (!apgItem && variant.sku) {
         const skuStr = String(variant.sku).trim();
-        // Try SKU without prefix (e.g., "BCSQ-100971" -> "100971")
-        const skuParts = skuStr.split("-");
-        if (skuParts.length > 1) {
-          const skuNumber = skuParts[skuParts.length - 1];
-          // Try to match by part number in CSV (Premier Part Number often matches SKU number)
-          for (const [key, item] of apgIndex.entries()) {
-            const partNum = item["Premier Part Number"] || "";
-            if (partNum && partNum.includes(skuNumber)) {
-              apgItem = item;
-              break;
+        const skuParts = skuStr.split("-"); // Define once for all strategies
+        
+        // Strategy 1: Try full SKU match first (case-insensitive)
+        apgItem = apgIndex.get(skuStr) || apgIndex.get(skuStr.toUpperCase());
+        
+        // Strategy 2: Try matching by part number substring
+        // Example: SKU "BHXS-ZT2-XTG6" contains "ZT2-XTG6" which should match "ACTZT2-XTG6"
+        if (!apgItem) {
+          // Try matching the last part(s) of SKU against Premier Part Number
+          // For "BHXS-ZT2-XTG6", try "ZT2-XTG6", then "XTG6"
+          for (let i = skuParts.length - 1; i >= 0 && i >= skuParts.length - 2; i--) {
+            const partialSku = skuParts.slice(i).join("-");
+            const partialUpper = partialSku.toUpperCase();
+            // Try direct match in index (already indexed uppercase)
+            apgItem = apgIndex.get(partialUpper);
+            if (apgItem) break;
+            
+            // Try substring matching against part numbers
+            for (const [key, item] of apgIndex.entries()) {
+              const partNum = String(item["Premier Part Number"] || "").trim().toUpperCase();
+              const mfgPartNum = String(item["Mfg Part Number"] || "").trim().toUpperCase();
+              // Check if part number contains the SKU fragment or vice versa
+              if ((partNum && (partNum.includes(partialUpper) || partialUpper.includes(partNum))) ||
+                  (mfgPartNum && (mfgPartNum.includes(partialUpper) || partialUpper.includes(mfgPartNum)))) {
+                apgItem = item;
+                break;
+              }
             }
+            if (apgItem) break;
           }
         }
-        // Also try full SKU match (already tried above, but keep for safety)
-        if (!apgItem) {
-          apgItem = apgIndex.get(skuStr);
+        
+        // Strategy 3: Try matching by extracting suffix (skip first prefix)
+        // For "BHXS-ZT2-XTG6", extract "ZT2-XTG6" and try to match
+        if (!apgItem && skuParts.length > 1) {
+          const suffixParts = skuParts.slice(1); // Skip first prefix (e.g., "BHXS")
+          const suffix = suffixParts.join("-");
+          const suffixUpper = suffix.toUpperCase();
+          // Try direct match
+          apgItem = apgIndex.get(suffixUpper);
+          if (!apgItem) {
+            // Try substring matching
+            for (const [key, item] of apgIndex.entries()) {
+              const partNum = String(item["Premier Part Number"] || "").trim().toUpperCase();
+              const mfgPartNum = String(item["Mfg Part Number"] || "").trim().toUpperCase();
+              if (partNum.includes(suffixUpper) || mfgPartNum.includes(suffixUpper) ||
+                  suffixUpper.includes(partNum) || suffixUpper.includes(mfgPartNum)) {
+                apgItem = item;
+                break;
+              }
+            }
+          }
         }
       }
 

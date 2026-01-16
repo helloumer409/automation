@@ -8,6 +8,8 @@ export async function createSyncStatsRun({
   shop,
   totalProducts,
   totalVariants,
+  csvDownloadedAt = null,
+  isFullSync = true,
 }) {
   try {
     const syncStats = await db.syncStats.create({
@@ -26,6 +28,8 @@ export async function createSyncStatsRun({
         status: "running",
         errorMessage: null,
         syncCompletedAt: null,
+        csvDownloadedAt,
+        isFullSync,
       },
     });
     return syncStats;

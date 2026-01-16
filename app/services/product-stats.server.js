@@ -1,8 +1,8 @@
 import { getAPGIndex } from "./apg-lookup.server";
-import { getShopifyProducts } from "./shopify-products.server";
+import { forEachShopifyProduct } from "./shopify-products.server";
 
 /**
- * Gets comprehensive product statistics
+ * Gets comprehensive product statistics using streaming to avoid memory issues
  */
 export async function getProductStats(admin) {
   try {
@@ -11,34 +11,11 @@ export async function getProductStats(admin) {
       throw new Error("Admin context is missing - cannot fetch product stats");
     }
     
-    // Get all Shopify products (this is the slow part for 22k+ products)
-    const shopifyProducts = await getShopifyProducts(admin);
-    
     // Get APG index for matching (cache this to speed up)
     const apgIndex = await getAPGIndex();
     
-    // Early return if no products
-    if (!shopifyProducts || shopifyProducts.length === 0) {
-      return {
-        totalProducts: 0,
-        totalVariants: 0,
-        activeProducts: 0,
-        draftProducts: 0,
-        archivedProducts: 0,
-        productsWithInventory: 0,
-        productsWithInventoryCount: 0,
-        matchedWithAPG: 0,
-        unmatchedWithAPG: 0,
-        mapZeroProducts: 0,
-        inventoryStats: {
-          withInventory: 0,
-          withoutInventory: 0,
-          totalQuantity: 0,
-        },
-      };
-    }
-    
-    let totalProducts = shopifyProducts.length;
+    // Use streaming approach instead of loading all products into memory
+    let totalProducts = 0;
     let totalVariants = 0;
     let activeProducts = 0;
     let draftProducts = 0;
@@ -56,7 +33,10 @@ export async function getProductStats(admin) {
       totalInventoryQuantity: 0,
     };
     
-    for (const product of shopifyProducts) {
+    // Stream products one by one to calculate stats
+    await forEachShopifyProduct(admin, (product) => {
+      totalProducts++;
+      
       // Count product status
       if (product.status === "ACTIVE") {
         activeProducts++;
@@ -76,10 +56,7 @@ export async function getProductStats(admin) {
       
       for (const variant of variants) {
         // Check inventory - query inventory levels if available
-        // Note: inventoryQuantity might not be in the query, so we check inventoryItem
         if (variant.inventoryItem?.id) {
-          // Product has inventory tracking enabled - assume it might have inventory
-          // Full inventory check would require additional queries per variant (too slow)
           productHasInventory = true;
         }
         
@@ -103,12 +80,13 @@ export async function getProductStats(admin) {
           
           // Try SKU matching
           if (!matched && variant.sku) {
-            matched = apgIndex.has(String(variant.sku).trim());
+            matched = apgIndex.has(String(variant.sku).trim()) || apgIndex.has(String(variant.sku).trim().toUpperCase());
           }
           
           // Check if MAP is 0 for matched products
           if (matched) {
-            const apgItem = apgIndex.get(lookupKeys.find(k => k && apgIndex.has(k)) || String(variant.sku).trim());
+            const matchedKey = lookupKeys.find(k => k && apgIndex.has(k)) || (variant.sku ? String(variant.sku).trim().toUpperCase() : null);
+            const apgItem = matchedKey ? apgIndex.get(matchedKey) : null;
             if (apgItem) {
               const mapPriceStr = apgItem.MAP || apgItem.map || apgItem["MAP Price"] || "0";
               const mapPrice = parseFloat(String(mapPriceStr).replace(/[$,\s]/g, "").trim()) || 0;
@@ -132,6 +110,27 @@ export async function getProductStats(admin) {
       } else {
         inventoryStats.withoutInventory++;
       }
+    });
+    
+    // Early return if no products
+    if (totalProducts === 0) {
+      return {
+        totalProducts: 0,
+        totalVariants: 0,
+        activeProducts: 0,
+        draftProducts: 0,
+        archivedProducts: 0,
+        productsWithInventory: 0,
+        productsWithInventoryCount: 0,
+        matchedWithAPG: 0,
+        unmatchedWithAPG: 0,
+        mapZeroProducts: 0,
+        inventoryStats: {
+          withInventory: 0,
+          withoutInventory: 0,
+          totalQuantity: 0,
+        },
+      };
     }
     
     return {

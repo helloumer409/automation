@@ -52,6 +52,8 @@ model SyncStats {
   mapSkipped      Int      @default(0)
   status          String   @default("running") // "running", "completed", "failed"
   errorMessage    String?
+  csvDownloadedAt DateTime? // Track when CSV was downloaded for this sync (null = used cached CSV)
+  isFullSync      Boolean  @default(true) // true = full sync, false = incremental sync (only unsynced)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }

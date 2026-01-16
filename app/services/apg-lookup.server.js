@@ -7,7 +7,25 @@ import { readAPGCSV } from "./apg-csv.server";
 
 let cachedIndex = null;
 let cacheTimestamp = null;
-const CACHE_TTL = 1000 * 60 * 60; // 1 hour cache
+let lastCSVDownloadTime = null;
+let lastCSVPath = null;
+let csvWasJustDownloaded = false; // Track if CSV was just downloaded in this call
+const CACHE_TTL = 1000 * 60 * 60 * 24; // 24 hour cache for CSV download (APG updates daily)
+const INDEX_CACHE_TTL = 1000 * 60 * 60; // 1 hour cache for the index itself
+
+/**
+ * Gets the timestamp of the last CSV download
+ */
+export function getLastCSVDownloadTime() {
+  return lastCSVDownloadTime;
+}
+
+/**
+ * Checks if CSV was just downloaded in the current getAPGIndex call
+ */
+export function wasCSVJustDownloaded() {
+  return csvWasJustDownloaded;
+}
 
 /**
  * Downloads and extracts APG feed from FTP
@@ -168,35 +186,64 @@ async function readAPGCSVFromPath(csvPath) {
  * @returns {Promise<Map>} Map indexed by UPC/barcode
  */
 export async function getAPGIndex() {
-  // Return cached index if still valid
-  if (cachedIndex && cacheTimestamp && (Date.now() - cacheTimestamp) < CACHE_TTL) {
+  // Return cached index if still valid (1 hour cache for index)
+  if (cachedIndex && cacheTimestamp && (Date.now() - cacheTimestamp) < INDEX_CACHE_TTL) {
     console.log("📦 Using cached APG index");
     return cachedIndex;
   }
 
   console.log("🔄 Building APG index...");
   let csvData = [];
+  csvWasJustDownloaded = false; // Reset flag
 
   try {
-    // Priority 1: Try downloading from FTP (for production/Railway)
-    if (process.env.APG_FTP_HOST && process.env.APG_FTP_USERNAME && process.env.APG_FTP_PASSWORD) {
+    // Check if we have a recent CSV download (within 24 hours)
+    const shouldDownloadCSV = !lastCSVDownloadTime || (Date.now() - lastCSVDownloadTime) >= CACHE_TTL;
+    const shouldUseCachedCSV = !shouldDownloadCSV && lastCSVPath && fs.existsSync(lastCSVPath);
+
+    if (shouldUseCachedCSV) {
+      // Use cached CSV file (downloaded within last 24 hours)
+      const hoursSinceDownload = ((Date.now() - lastCSVDownloadTime) / (1000 * 60 * 60)).toFixed(1);
+      console.log(`📦 Using cached CSV file (downloaded ${hoursSinceDownload} hours ago)`);
+      console.log(`   Path: ${lastCSVPath}`);
       try {
-        console.log("📥 Attempting to download CSV from FTP...");
+        csvData = await readAPGCSVFromPath(lastCSVPath);
+        console.log(`✅ Successfully loaded ${csvData.length} items from cached CSV`);
+      } catch (cacheError) {
+        console.warn("⚠️ Cached CSV read failed, will re-download:", cacheError.message);
+        // Fall through to download logic
+      }
+    }
+
+    // Download fresh CSV if needed (24+ hours old or cache read failed)
+    if (csvData.length === 0 && process.env.APG_FTP_HOST && process.env.APG_FTP_USERNAME && process.env.APG_FTP_PASSWORD) {
+      try {
+        console.log("📥 Downloading fresh CSV from FTP (24+ hours since last download)...");
         console.log(`   Host: ${process.env.APG_FTP_HOST}`);
         console.log(`   User: ${process.env.APG_FTP_USERNAME}`);
         console.log(`   File: ${process.env.APG_FTP_FILENAME || "premier_data_feed_master.zip"}`);
         const csvPath = await downloadAndExtractAPGFeed();
         csvData = await readAPGCSVFromPath(csvPath);
-        console.log(`✅ Successfully loaded ${csvData.length} items from FTP CSV`);
+        // Cache the download time and path for next time
+        const previousDownloadTime = lastCSVDownloadTime;
+        lastCSVDownloadTime = Date.now();
+        lastCSVPath = csvPath;
+        csvWasJustDownloaded = true; // Mark that CSV was just downloaded
+        console.log(`✅ Successfully downloaded and loaded ${csvData.length} items from FTP CSV`);
+        console.log(`   This CSV will be reused for the next 24 hours`);
+        if (previousDownloadTime) {
+          const hoursBetween = ((lastCSVDownloadTime - previousDownloadTime) / (1000 * 60 * 60)).toFixed(1);
+          console.log(`   Previous CSV was ${hoursBetween} hours old`);
+        }
       } catch (ftpError) {
         console.error("❌ FTP download failed:", ftpError.message);
         console.warn("⚠️ Falling back to local CSV (if available)...");
       }
-    } else {
-      console.log("ℹ️  FTP credentials not configured, skipping FTP download");
+    } else if (csvData.length === 0 && !process.env.APG_FTP_HOST) {
+      console.log("ℹ️  FTP credentials not configured, trying local CSV");
     }
 
-    // Priority 2: Try local CSV file (for development)
+    // Priority 3: Try local CSV file (for development)
     if (csvData.length === 0) {
       try {
         csvData = await readAPGCSV();
@@ -242,12 +289,31 @@ export async function getAPGIndex() {
       }
     }
 
-    // Also index by Premier Part Number if available (for SKU matching)
+    // Also index by Premier Part Number and Mfg Part Number if available (for SKU matching)
     const partNumber = item["Premier Part Number"] || item.premierPartNumber;
     if (partNumber) {
       const partNumStr = String(partNumber).trim();
       if (!index.has(partNumStr)) {
         index.set(partNumStr, item);
+      }
+      // Also index uppercase version for case-insensitive matching
+      const partNumUpper = partNumStr.toUpperCase();
+      if (partNumUpper !== partNumStr && !index.has(partNumUpper)) {
+        index.set(partNumUpper, item);
+      }
+    }
+    
+    // Also index by Mfg Part Number for additional matching
+    const mfgPartNumber = item["Mfg Part Number"] || item["Manufacturer Part Number"];
+    if (mfgPartNumber) {
+      const mfgPartStr = String(mfgPartNumber).trim();
+      if (!index.has(mfgPartStr)) {
+        index.set(mfgPartStr, item);
+      }
+      // Also index uppercase version
+      const mfgPartUpper = mfgPartStr.toUpperCase();
+      if (mfgPartUpper !== mfgPartStr && !index.has(mfgPartUpper)) {
+        index.set(mfgPartUpper, item);
       }
     }
   }

@@ -9,11 +9,18 @@ function normalizeUPC(upcRaw) {
   if (!upcRaw) return "";
   let upc = String(upcRaw).trim();
   
-  // Convert scientific notation to full number (e.g., 8.34532E+11 -> 834532000000)
+  // Convert scientific notation to full number (e.g., 8.42385E+11 -> 842385000000)
+  // Important: Scientific notation may lose precision, so we round to nearest integer
   if (upc.includes("E+") || upc.includes("e+") || upc.includes("E-") || upc.includes("e-")) {
     try {
       const numValue = parseFloat(upc);
+      // Round to integer and convert back to string, preserving all digits
       upc = Math.round(numValue).toString();
+      // Ensure we have at least 12 digits (standard UPC length)
+      // If the scientific notation was imprecise, pad with zeros
+      if (upc.length < 12) {
+        upc = upc.padStart(12, "0");
+      }
     } catch (e) {
       // Keep original if conversion fails
     }
