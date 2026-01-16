@@ -49,6 +49,7 @@ export async function performSync(admin, shop) {
   };
 
   let processedVariants = 0;
+  let lastDbUpdateVariants = 0;
   const progressInterval = Math.max(1, Math.floor(totalVariants / 20)); // Log every 5%
 
   // Create a running stats record so UI can show progress
@@ -69,6 +70,32 @@ export async function performSync(admin, shop) {
   const productsSetToDraft = new Set(); // Track products set to DRAFT
 
   console.log(`🚀 Starting sync for ${totalProducts} products (${totalVariants} variants)...`);
+  
+  // Helper function to update progress in DB (with throttling)
+  const updateProgress = async (force = false) => {
+    if (!syncStatsId) return;
+    
+    // Update DB more frequently at the beginning (every 100 variants for first 1000), then less frequently
+    const variantsSinceLastUpdate = processedVariants - lastDbUpdateVariants;
+    const shouldUpdate = force || 
+      (processedVariants <= 1000 && variantsSinceLastUpdate >= 100) || // First 1000: every 100 variants
+      (processedVariants <= 10000 && variantsSinceLastUpdate >= 500) || // Next 9000: every 500 variants
+      (variantsSinceLastUpdate >= 1000); // After 10000: every 1000 variants
+    
+    if (shouldUpdate) {
+      try {
+        await updateSyncStatsRun(syncStatsId, {
+          synced,
+          skipped,
+          errors: errors.length,
+          mapStats,
+        });
+        lastDbUpdateVariants = processedVariants;
+      } catch (err) {
+        console.error("Failed to update sync progress:", err.message);
+      }
+    }
+  };
 
   // Stream products one-by-one to avoid holding entire catalog in memory
   await forEachShopifyProduct(admin, async (product) => {
@@ -77,21 +104,11 @@ export async function performSync(admin, shop) {
     for (const variant of product.variants.nodes) {
       processedVariants++;
       
-      // Log progress much less frequently to reduce Railway rate limits (every 20% instead of 10%)
+      // Log progress less frequently to reduce console spam (every 20%)
       const progressInterval20 = Math.max(1, Math.floor(totalVariants / 5));
       if (processedVariants % progressInterval20 === 0 || processedVariants === totalVariants) {
         const progress = ((processedVariants / totalVariants) * 100).toFixed(1);
         console.log(`📊 Progress: ${processedVariants}/${totalVariants} (${progress}%) - Synced: ${synced}, Skipped: ${skipped}`);
-
-        // Update DB progress for UI if we have a stats record
-        if (syncStatsId) {
-          await updateSyncStatsRun(syncStatsId, {
-            synced,
-            skipped,
-            errors: errors.length,
-            mapStats,
-          });
-        }
       }
       // In incremental sync mode, only sync variants that don't have barcode/SKU (new products)
       // OR variants that might have been skipped in the last sync
@@ -107,6 +124,7 @@ export async function performSync(admin, shop) {
       if (!variant.barcode && !variant.sku) {
         // No barcode or SKU - skip (can't match)
         skipped++;
+        await updateProgress(); // Update progress after skip
         continue;
       }
 
@@ -215,6 +233,7 @@ export async function performSync(admin, shop) {
 
       if (!apgItem) {
         skipped++;
+        await updateProgress(); // Update progress after skip
         // Only log missing matches much less frequently to reduce Railway rate limits
         if (skipped % 5000 === 0) {
           console.log(`⏭ ${skipped} products skipped (no APG match so far)`);
@@ -234,15 +253,32 @@ export async function performSync(admin, shop) {
           apgRow: apgItem,
         }, mapStats);
         synced++;
+        await updateProgress(); // Update progress after sync
       } catch (error) {
+        const errorMsg = error.message || String(error);
+        const isTokenError = errorMsg.includes("access token") || 
+                            errorMsg.includes("expired") || 
+                            errorMsg.includes("invalid") ||
+                            errorMsg.includes("Missing access token");
+        
         errors.push({
           product: product.title,
           variant: variant.sku || variant.barcode,
-          error: error.message
+          error: errorMsg,
+          isTokenError // Flag token expiration errors
         });
-        // Only log critical errors, not every sync error (reduces log spam)
-        if (errors.length <= 10 || errors.length % 100 === 0) {
-          console.error(`❌ Sync error for ${variant.sku || variant.barcode}: ${error.message}`);
+        
+        // Log token errors more prominently, other errors less frequently
+        if (isTokenError) {
+          // Log first few token errors, then every 50th
+          if (errors.filter(e => e.isTokenError).length <= 5 || errors.filter(e => e.isTokenError).length % 50 === 0) {
+            console.error(`⚠️ Token expiration error for ${variant.sku || variant.barcode} - sync will continue but this variant failed`);
+          }
+        } else {
+          // Only log critical errors, not every sync error (reduces log spam)
+          if (errors.length <= 10 || errors.length % 100 === 0) {
+            console.error(`❌ Sync error for ${variant.sku || variant.barcode}: ${errorMsg}`);
+          }
         }
       }
     }
@@ -269,8 +305,20 @@ export async function performSync(admin, shop) {
   const totalProcessed = synced + skipped;
   const successRate = totalProcessed > 0 ? ((synced / totalProcessed) * 100).toFixed(1) : 0;
   
+  // Count token expiration errors separately
+  const tokenErrors = errors.filter(e => e.isTokenError).length;
+  
   // Reduced logging to prevent Railway rate limits - single line summary
-  console.log(`✅ SYNC COMPLETE: ${synced}/${totalProcessed} synced (${successRate}%), ${skipped} skipped, ${errors.length} errors | MAP:${mapStats.mapMatched} Jobber:${mapStats.mapUsedJobber} Retail:${mapStats.mapUsedRetail} Skipped:${mapStats.mapSkipped}`);
+  let summaryMsg = `✅ SYNC COMPLETE: ${synced}/${totalProcessed} synced (${successRate}%), ${skipped} skipped, ${errors.length} errors`;
+  if (tokenErrors > 0) {
+    summaryMsg += ` (${tokenErrors} token expiration errors - run sync again to retry)`;
+  }
+  summaryMsg += ` | MAP:${mapStats.mapMatched} Jobber:${mapStats.mapUsedJobber} Retail:${mapStats.mapUsedRetail} Skipped:${mapStats.mapSkipped}`;
+  console.log(summaryMsg);
+  
+  if (tokenErrors > 0) {
+    console.warn(`⚠️ WARNING: ${tokenErrors} variants failed due to access token expiration. Run sync again to retry these variants.`);
+  }
 
   // Save final stats to database / mark run completed
   if (shop && syncStatsId) {
@@ -299,6 +347,11 @@ export async function performSync(admin, shop) {
       mapSkippedReasons: mapStats.mapSkippedReasons.slice(0, 20) // Limit to 20 for response size
     },
     errors: errors.length > 0 ? errors.slice(0, 50) : undefined, // Limit errors to prevent large responses
-    message: `✅ Sync complete! ${synced} products updated (MAP: ${mapStats.mapMatched}, Jobber: ${mapStats.mapUsedJobber}), ${skipped} skipped, ${errors.length} errors`,
+    message: (() => {
+      const tokenErrorCount = errors.filter(e => e.isTokenError).length;
+      return tokenErrorCount > 0 
+        ? `✅ Sync complete! ${synced} products updated (MAP: ${mapStats.mapMatched}, Jobber: ${mapStats.mapUsedJobber}), ${skipped} skipped, ${errors.length} errors (${tokenErrorCount} due to token expiration - run sync again to retry)`
+        : `✅ Sync complete! ${synced} products updated (MAP: ${mapStats.mapMatched}, Jobber: ${mapStats.mapUsedJobber}), ${skipped} skipped, ${errors.length} errors`;
+    })(),
   };
 }

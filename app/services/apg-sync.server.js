@@ -241,7 +241,15 @@ export async function syncAPGVariant({
     }
   } catch (error) {
     // If it's an access token error, throw a more descriptive error
-    if (error.message?.includes("access token") || error.message?.includes("MissingRequiredArgument")) {
+    const errorMsg = error.message || String(error);
+    const errorStr = JSON.stringify(error);
+    
+    if (errorMsg.includes("access token") || 
+        errorMsg.includes("MissingRequiredArgument") ||
+        errorMsg.includes("Missing access token") ||
+        errorStr.includes("access token") ||
+        error.response?.status === 401 ||
+        error.status === 401) {
       throw new Error("Admin context lost during sync - access token expired or invalid. Please restart sync.");
     }
     throw error;
