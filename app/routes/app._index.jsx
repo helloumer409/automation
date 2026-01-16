@@ -4,7 +4,7 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { getLatestSyncStats } from "../services/sync-stats.server";
-import { getProductStats } from "../services/product-stats.server";
+import { getProductStats, getBasicProductStats } from "../services/product-stats.server";
 import { getRecentOrders } from "../services/shopify-orders.server";
 
 
@@ -43,24 +43,24 @@ export const loader = async ({ request }) => {
     recentOrders = [];
   }
   
-  // Get comprehensive product stats
-  // For large stores (22k+ products), stats can take 60+ seconds
-  // Load stats asynchronously - don't block page load
-  // Page will show loading state and update when stats are ready
+  // Get product stats - load basic stats first (fast), then full stats in background
+  // Basic stats show immediately, full stats (with APG matching) update later
   let productStats = null;
   try {
-    // Use a reasonable timeout (20 seconds) - if it takes longer, show loading state
-    // Stats will continue loading in background via client-side fetch
-    const statsPromise = getProductStats(admin);
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Product stats taking longer than expected - will load in background")), 20000)
-    );
-    productStats = await Promise.race([statsPromise, timeoutPromise]);
-    console.log(`✅ Product stats loaded: ${productStats.totalProducts} products, ${productStats.totalVariants} variants`);
+    // Load basic stats immediately (fast, no APG matching)
+    productStats = await getBasicProductStats(admin);
+    console.log(`✅ Basic product stats loaded: ${productStats.totalProducts} products, ${productStats.totalVariants} variants`);
+    
+    // Load full stats (with APG matching) in background (non-blocking)
+    // This will update the stats when complete
+    getProductStats(admin).then((fullStats) => {
+      console.log(`✅ Full product stats loaded: ${fullStats.matchedWithAPG} matched with APG`);
+    }).catch((err) => {
+      console.log("ℹ️ Full stats loading failed (non-critical):", err.message);
+    });
   } catch (error) {
-    // Stats are loading but taking longer - page will show loading state
-    // Client-side code will fetch stats in background
-    console.log("ℹ️ Product stats loading (may take up to 60s for large stores):", error.message);
+    // If basic stats fail, try to show something
+    console.error("❌ Error loading basic product stats:", error.message);
     productStats = null; // Show loading state on frontend
   }
   
@@ -186,16 +186,71 @@ export default function Index() {
 
   // Poll sync progress while a sync is in progress (manual or auto-sync)
   useEffect(() => {
+    let interval = null;
+    let errorCount = 0;
+    let pollCount = 0;
+    
     const poll = () => {
-      progressFetcher.load("/app/sync-progress");
+      // Only poll if not already loading to avoid request spam
+      if (progressFetcher.state === "idle") {
+        progressFetcher.load("/app/sync-progress");
+        pollCount++;
+      }
+    };
+
+    // Check if we should continue polling
+    const shouldContinuePolling = () => {
+      // Stop if we've had too many errors (session expired)
+      if (errorCount >= 3) {
+        return false;
+      }
+      
+      // Stop if we've polled for more than 2 minutes without an active sync
+      if (pollCount > 24) {
+        const hasActiveSync = isSyncing || 
+          (progressFetcher.data?.success && 
+           (progressFetcher.data?.status === "running" || 
+            (progressFetcher.data?.progress > 0 && progressFetcher.data?.progress < 100)));
+        if (!hasActiveSync) {
+          return false;
+        }
+      }
+      
+      return true;
     };
 
     // Initial poll on page load to check for auto-sync progress
     poll();
-    // Poll every 5 seconds to catch auto-sync progress even if user didn't click manual sync
-    const interval = setInterval(poll, 5000);
-    return () => clearInterval(interval);
+    
+    // Poll every 5 seconds, but stop if no active sync or too many errors
+    interval = setInterval(() => {
+      // Check for errors in the last response
+      if (progressFetcher.data?.error || progressFetcher.data?.requiresReauth) {
+        errorCount++;
+      } else {
+        errorCount = 0; // Reset on success
+      }
+      
+      if (!shouldContinuePolling()) {
+        console.log("Stopping progress polling - no active sync or too many errors");
+        clearInterval(interval);
+        return;
+      }
+      
+      poll();
+    }, 5000);
+    
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, [progressFetcher]);
+  
+  // Reset error count when we get successful responses
+  useEffect(() => {
+    if (progressFetcher.data?.success) {
+      // Reset any error tracking - successful response received
+    }
+  }, [progressFetcher.data]);
 
   // Update local progress bar state when progress fetcher returns data
   useEffect(() => {
@@ -211,10 +266,24 @@ export default function Index() {
   useEffect(() => {
     if (syncFetcher.data?.success) {
       shopify.toast.show(syncFetcher.data.message || "Sync completed successfully!");
+      // Reload stats after sync completes to show updated numbers
+      setTimeout(() => {
+        statsFetcher.load("/app");
+      }, 2000); // Wait 2 seconds for sync stats to be saved
     } else if (syncFetcher.data?.error) {
       shopify.toast.show(`Sync failed: ${syncFetcher.data.error}`, { isError: true });
     }
-  }, [syncFetcher.data, shopify]);
+  }, [syncFetcher.data, shopify, statsFetcher]);
+  
+  // Also reload stats when sync progress completes (progress reaches 100%)
+  useEffect(() => {
+    if (progressFetcher.data?.success && progressFetcher.data?.status === "completed" && progressFetcher.data?.progress >= 100) {
+      // Sync just completed - reload stats to show updated numbers
+      setTimeout(() => {
+        statsFetcher.load("/app");
+      }, 2000);
+    }
+  }, [progressFetcher.data, statsFetcher]);
 
   useEffect(() => {
     if (retryFetcher.data?.success) {
@@ -399,8 +468,8 @@ export default function Index() {
           </s-text>
         )}
         
-        {/* Show progress bar if auto-sync is running (status is "running") */}
-        {autoSyncEnabled && progressFetcher.data?.success && progressFetcher.data?.status === "running" && (
+        {/* Show progress bar if auto-sync is running (status is "running" OR progress > 0) */}
+        {autoSyncEnabled && progressFetcher.data?.success && (progressFetcher.data?.status === "running" || (progressFetcher.data?.progress > 0 && progressFetcher.data?.progress < 100)) && (
           <div style={{ marginTop: "0.75rem" }}>
             <s-text variant="bodySm" tone="info" style={{ marginBottom: "0.5rem" }}>
               🔄 Auto-sync in progress...

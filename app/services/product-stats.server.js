@@ -1,8 +1,71 @@
 import { getAPGIndex } from "./apg-lookup.server";
-import { forEachShopifyProduct } from "./shopify-products.server";
+import { forEachShopifyProduct, countShopifyCatalog } from "./shopify-products.server";
 
 /**
- * Gets comprehensive product statistics using streaming to avoid memory issues
+ * Gets basic product statistics quickly (without APG matching)
+ * This is fast and shows immediately on dashboard
+ */
+export async function getBasicProductStats(admin) {
+  try {
+    if (!admin || !admin.graphql) {
+      throw new Error("Admin context is missing - cannot fetch product stats");
+    }
+    
+    // Use countShopifyCatalog for fast counting
+    const { totalProducts, totalVariants } = await countShopifyCatalog(admin);
+    
+    // Now stream quickly to get status breakdown
+    let activeProducts = 0;
+    let draftProducts = 0;
+    let archivedProducts = 0;
+    let productsWithInventory = 0;
+    
+    // Stream products to get status counts (fast, no APG matching)
+    await forEachShopifyProduct(admin, (product) => {
+      if (product.status === "ACTIVE") {
+        activeProducts++;
+      } else if (product.status === "DRAFT") {
+        draftProducts++;
+      } else if (product.status === "ARCHIVED") {
+        archivedProducts++;
+      }
+      
+      // Check if product has inventory tracking enabled
+      const variants = product.variants?.nodes || [];
+      for (const variant of variants) {
+        if (variant.inventoryItem?.id) {
+          productsWithInventory++;
+          break; // Count product once if any variant has inventory
+        }
+      }
+    });
+    
+    return {
+      totalProducts,
+      totalVariants,
+      activeProducts,
+      draftProducts,
+      archivedProducts,
+      productsWithInventory,
+      productsWithInventoryCount: 0, // Will be filled later
+      matchedWithAPG: 0, // Will be filled later by full stats
+      unmatchedWithAPG: 0, // Will be filled later by full stats
+      mapZeroProducts: 0, // Will be filled later by full stats
+      inventoryStats: {
+        withInventory: productsWithInventory,
+        withoutInventory: totalProducts - productsWithInventory,
+        totalQuantity: 0,
+      },
+    };
+  } catch (error) {
+    console.error("❌ Error fetching basic product stats:", error);
+    throw error;
+  }
+}
+
+/**
+ * Gets comprehensive product statistics with APG matching
+ * This is slower but provides full details
  */
 export async function getProductStats(admin) {
   try {
@@ -111,27 +174,6 @@ export async function getProductStats(admin) {
         inventoryStats.withoutInventory++;
       }
     });
-    
-    // Early return if no products
-    if (totalProducts === 0) {
-      return {
-        totalProducts: 0,
-        totalVariants: 0,
-        activeProducts: 0,
-        draftProducts: 0,
-        archivedProducts: 0,
-        productsWithInventory: 0,
-        productsWithInventoryCount: 0,
-        matchedWithAPG: 0,
-        unmatchedWithAPG: 0,
-        mapZeroProducts: 0,
-        inventoryStats: {
-          withInventory: 0,
-          withoutInventory: 0,
-          totalQuantity: 0,
-        },
-      };
-    }
     
     return {
       totalProducts,
