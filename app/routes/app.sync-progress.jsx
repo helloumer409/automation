@@ -20,6 +20,7 @@ export async function loader({ request }) {
     const stats = await getLatestSyncStats(shop);
 
     if (!stats) {
+      // No sync stats - return idle status (polling will stop after 2 minutes)
       return new Response(
         JSON.stringify({ success: false, error: "No sync stats found", status: "idle" }),
         { status: 200, headers: { "Content-Type": "application/json" } },
@@ -29,6 +30,11 @@ export async function loader({ request }) {
     const total = stats.totalVariants || 0;
     const processed = (stats.synced || 0) + (stats.skipped || 0);
     const progress = total > 0 ? Number(((processed / total) * 100).toFixed(1)) : 0;
+    
+    // Log sync status for debugging (only log occasionally to avoid spam)
+    if (stats.status === "running" && processed % 1000 === 0) {
+      console.log(`📊 Sync progress: ${progress}% (${processed}/${total} variants) - Status: ${stats.status}`);
+    }
 
     return new Response(
       JSON.stringify({

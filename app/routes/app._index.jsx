@@ -231,10 +231,21 @@ export default function Index() {
         errorCount = 0; // Reset on success
       }
       
+      // Check if we have an active sync
+      const hasActiveSync = isSyncing || 
+        (progressFetcher.data?.success && 
+         (progressFetcher.data?.status === "running" || 
+          (progressFetcher.data?.progress > 0 && progressFetcher.data?.progress < 100)));
+      
       if (!shouldContinuePolling()) {
-        console.log("Stopping progress polling - no active sync or too many errors");
+        console.log(`✅ Stopping progress polling after ${pollCount} checks - no active sync detected`);
         clearInterval(interval);
         return;
+      }
+      
+      // Log when we detect an active sync (for debugging)
+      if (hasActiveSync && pollCount === 1) {
+        console.log("🔄 Active sync detected - continuing to poll for progress updates");
       }
       
       poll();
