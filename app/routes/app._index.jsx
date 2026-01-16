@@ -43,25 +43,40 @@ export const loader = async ({ request }) => {
     recentOrders = [];
   }
   
-  // Get product stats - load basic stats first (fast), then full stats in background
-  // Basic stats show immediately, full stats (with APG matching) update later
+  // Get product stats - try to load full stats, but fall back to basic if it takes too long
   let productStats = null;
   try {
-    // Load basic stats immediately (fast, no APG matching)
-    productStats = await getBasicProductStats(admin);
-    console.log(`✅ Basic product stats loaded: ${productStats.totalProducts} products, ${productStats.totalVariants} variants`);
+    // Try to load full stats (with APG matching) - use Promise.race to timeout after 10 seconds
+    const fullStatsPromise = getProductStats(admin);
+    const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 10000)); // 10 second timeout
     
-    // Load full stats (with APG matching) in background (non-blocking)
-    // This will update the stats when complete
-    getProductStats(admin).then((fullStats) => {
-      console.log(`✅ Full product stats loaded: ${fullStats.matchedWithAPG} matched with APG`);
-    }).catch((err) => {
-      console.log("ℹ️ Full stats loading failed (non-critical):", err.message);
-    });
+    productStats = await Promise.race([fullStatsPromise, timeoutPromise]);
+    
+    if (!productStats) {
+      // Timeout - load basic stats instead
+      console.log("⏱️ Full stats timed out, loading basic stats...");
+      productStats = await getBasicProductStats(admin);
+      console.log(`✅ Basic product stats loaded: ${productStats.totalProducts} products, ${productStats.totalVariants} variants`);
+      
+      // Continue loading full stats in background
+      fullStatsPromise.then((fullStats) => {
+        console.log(`✅ Full product stats loaded in background: ${fullStats.matchedWithAPG} matched with APG`);
+      }).catch((err) => {
+        console.log("ℹ️ Full stats loading failed (non-critical):", err.message);
+      });
+    } else {
+      console.log(`✅ Full product stats loaded: ${productStats.matchedWithAPG} matched with APG`);
+    }
   } catch (error) {
-    // If basic stats fail, try to show something
-    console.error("❌ Error loading basic product stats:", error.message);
-    productStats = null; // Show loading state on frontend
+    // If stats fail, try basic stats
+    console.error("❌ Error loading product stats:", error.message);
+    try {
+      productStats = await getBasicProductStats(admin);
+      console.log(`✅ Basic product stats loaded as fallback: ${productStats.totalProducts} products`);
+    } catch (basicError) {
+      console.error("❌ Error loading basic product stats:", basicError.message);
+      productStats = null; // Show loading state on frontend
+    }
   }
   
   // Check if auto-sync is enabled
@@ -162,13 +177,14 @@ export default function Index() {
   const isSyncing = ["loading", "submitting"].includes(syncFetcher.state) &&
     syncFetcher.formMethod === "POST";
 
-  // If stats didn't load initially (timeout), fetch them in background
+  // If stats didn't load initially or show 0 matches, fetch full stats in background
   useEffect(() => {
-    if (!productStats && !statsFetcher.data?.productStats && statsFetcher.state === "idle") {
-      // Fetch stats in background after page loads (for large stores)
+    const needsFullStats = !productStats || (productStats.matchedWithAPG === 0 && productStats.totalVariants > 0);
+    if (needsFullStats && !statsFetcher.data?.productStats && statsFetcher.state === "idle") {
+      // Fetch full stats in background after page loads (for large stores)
       const timer = setTimeout(() => {
-        statsFetcher.load("/app");
-      }, 2000); // Wait 2 seconds after page load
+        statsFetcher.load("/app/product-stats");
+      }, 3000); // Wait 3 seconds after page load
       return () => clearTimeout(timer);
     }
   }, [productStats, statsFetcher]);
@@ -178,7 +194,7 @@ export default function Index() {
     if (!autoRefreshStats) return;
     
     const interval = setInterval(() => {
-      statsFetcher.load("/app");
+      statsFetcher.load("/app/product-stats");
     }, 30000); // Refresh every 30 seconds
     
     return () => clearInterval(interval);
@@ -279,7 +295,7 @@ export default function Index() {
       shopify.toast.show(syncFetcher.data.message || "Sync completed successfully!");
       // Reload stats after sync completes to show updated numbers
       setTimeout(() => {
-        statsFetcher.load("/app");
+        statsFetcher.load("/app/product-stats");
       }, 2000); // Wait 2 seconds for sync stats to be saved
     } else if (syncFetcher.data?.error) {
       shopify.toast.show(`Sync failed: ${syncFetcher.data.error}`, { isError: true });
@@ -291,7 +307,7 @@ export default function Index() {
     if (progressFetcher.data?.success && progressFetcher.data?.status === "completed" && progressFetcher.data?.progress >= 100) {
       // Sync just completed - reload stats to show updated numbers
       setTimeout(() => {
-        statsFetcher.load("/app");
+        statsFetcher.load("/app/product-stats");
       }, 2000);
     }
   }, [progressFetcher.data, statsFetcher]);
