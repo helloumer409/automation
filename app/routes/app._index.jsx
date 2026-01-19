@@ -205,6 +205,8 @@ export default function Index() {
     let interval = null;
     let errorCount = 0;
     let pollCount = 0;
+    let sessionExpiredCount = 0;
+    const MAX_SESSION_EXPIRED = 5; // Stop polling after 5 consecutive session expired errors
     
     const poll = () => {
       // Only poll if not already loading to avoid request spam
@@ -216,13 +218,19 @@ export default function Index() {
 
     // Check if we should continue polling
     const shouldContinuePolling = () => {
-      // Stop if we've had too many errors (session expired)
-      if (errorCount >= 3) {
+      // Stop if session expired multiple times (sync may still be running in background)
+      if (sessionExpiredCount >= MAX_SESSION_EXPIRED) {
+        console.log(`⚠️ Stopping progress polling - session expired ${sessionExpiredCount} times. Sync may still be running in background.`);
         return false;
       }
       
-      // Stop if we've polled for more than 2 minutes without an active sync
-      if (pollCount > 24) {
+      // Stop if we've had too many other errors
+      if (errorCount >= 3 && sessionExpiredCount === 0) {
+        return false;
+      }
+      
+      // Stop if we've polled for more than 5 minutes without an active sync
+      if (pollCount > 60) {
         const hasActiveSync = isSyncing || 
           (progressFetcher.data?.success && 
            (progressFetcher.data?.status === "running" || 
@@ -238,13 +246,20 @@ export default function Index() {
     // Initial poll on page load to check for auto-sync progress
     poll();
     
-    // Poll every 5 seconds, but stop if no active sync or too many errors
+    // Poll every 5 seconds, but reduce frequency if session expired
+    const pollInterval = progressFetcher.data?.requiresReauth ? 15000 : 5000; // Poll less frequently if session expired
+    
     interval = setInterval(() => {
       // Check for errors in the last response
-      if (progressFetcher.data?.error || progressFetcher.data?.requiresReauth) {
+      if (progressFetcher.data?.requiresReauth) {
+        sessionExpiredCount++;
+        errorCount = 0; // Don't count session expired as regular error
+      } else if (progressFetcher.data?.error) {
         errorCount++;
+        sessionExpiredCount = 0; // Reset session expired count on other errors
       } else {
         errorCount = 0; // Reset on success
+        sessionExpiredCount = 0; // Reset session expired count on success
       }
       
       // Check if we have an active sync
@@ -254,7 +269,11 @@ export default function Index() {
           (progressFetcher.data?.progress > 0 && progressFetcher.data?.progress < 100)));
       
       if (!shouldContinuePolling()) {
-        console.log(`✅ Stopping progress polling after ${pollCount} checks - no active sync detected`);
+        if (sessionExpiredCount >= MAX_SESSION_EXPIRED) {
+          console.log(`⚠️ Progress polling stopped - session expired. Sync may still be running. Refresh page to check sync status.`);
+        } else {
+          console.log(`✅ Stopping progress polling after ${pollCount} checks - no active sync detected`);
+        }
         clearInterval(interval);
         return;
       }
@@ -265,12 +284,12 @@ export default function Index() {
       }
       
       poll();
-    }, 5000);
+    }, pollInterval);
     
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [progressFetcher]);
+  }, [progressFetcher, isSyncing]);
   
   // Reset error count when we get successful responses
   useEffect(() => {
@@ -495,32 +514,39 @@ export default function Index() {
           </s-text>
         )}
         
-        {/* Show progress bar if auto-sync is running (status is "running" OR progress > 0) */}
-        {autoSyncEnabled && progressFetcher.data?.success && (progressFetcher.data?.status === "running" || (progressFetcher.data?.progress > 0 && progressFetcher.data?.progress < 100)) && (
+        {/* Show progress bar if auto-sync is running (status is "running" OR progress > 0) OR session expired but sync may be running */}
+        {autoSyncEnabled && (progressFetcher.data?.success && (progressFetcher.data?.status === "running" || (progressFetcher.data?.progress > 0 && progressFetcher.data?.progress < 100)) || progressFetcher.data?.requiresReauth) && (
           <div style={{ marginTop: "0.75rem" }}>
-            <s-text variant="bodySm" tone="info" style={{ marginBottom: "0.5rem" }}>
-              🔄 Auto-sync in progress...
+            <s-text variant="bodySm" tone={progressFetcher.data?.requiresReauth ? "warning" : "info"} style={{ marginBottom: "0.5rem" }}>
+              {progressFetcher.data?.requiresReauth 
+                ? "⚠️ Session expired - Sync may still be running in background. Refresh page to check status."
+                : "🔄 Auto-sync in progress..."
+              }
             </s-text>
-            <div
-              style={{
-                height: "8px",
-                borderRadius: "4px",
-                background: "#f4f6f8",
-                overflow: "hidden",
-              }}
-            >
-              <div
-                style={{
-                  height: "100%",
-                  width: `${progressFetcher.data.progress || 0}%`,
-                  background: "#bf0711", // red progress bar
-                  transition: "width 0.5s ease-out",
-                }}
-              />
-            </div>
-            <s-text variant="bodySm" tone="subdued" style={{ marginTop: "0.25rem" }}>
-              {progressFetcher.data.progress || 0}% · Synced: {progressFetcher.data.synced || 0}, Skipped: {progressFetcher.data.skipped || 0}, Errors: {progressFetcher.data.errors || 0}
-            </s-text>
+            {!progressFetcher.data?.requiresReauth && (
+              <>
+                <div
+                  style={{
+                    height: "8px",
+                    borderRadius: "4px",
+                    background: "#f4f6f8",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      height: "100%",
+                      width: `${progressFetcher.data.progress || 0}%`,
+                      background: "#bf0711", // red progress bar
+                      transition: "width 0.5s ease-out",
+                    }}
+                  />
+                </div>
+                <s-text variant="bodySm" tone="subdued" style={{ marginTop: "0.25rem" }}>
+                  {progressFetcher.data.progress || 0}% · Synced: {progressFetcher.data.synced || 0}, Skipped: {progressFetcher.data.skipped || 0}, Errors: {progressFetcher.data.errors || 0}
+                </s-text>
+              </>
+            )}
           </div>
         )}
       </s-stack>

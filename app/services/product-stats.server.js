@@ -8,7 +8,7 @@ import { forEachShopifyProduct, countShopifyCatalog } from "./shopify-products.s
 export async function getBasicProductStats(admin) {
   try {
     if (!admin || !admin.graphql) {
-      throw new Error("Admin context is missing - cannot fetch product stats");
+      throw new Error("Admin context is missing - cannot fetch product stats. Session may have expired.");
     }
     
     // Use countShopifyCatalog for fast counting
@@ -71,7 +71,7 @@ export async function getProductStats(admin) {
   try {
     // Validate admin context
     if (!admin || !admin.graphql) {
-      throw new Error("Admin context is missing - cannot fetch product stats");
+      throw new Error("Admin context is missing - cannot fetch product stats. Session may have expired.");
     }
     
     // Get APG index for matching (cache this to speed up)
@@ -438,11 +438,21 @@ export async function getProductStats(admin) {
       inventoryStats: {
         withInventory: inventoryStats.withInventory,
         withoutInventory: inventoryStats.withoutInventory,
-        totalQuantity: inventoryStats.totalInventoryQuantity,
+        totalQuantity: inventoryStats.totalQuantity,
       },
     };
   } catch (error) {
-    console.error("❌ Error fetching product stats:", error);
+    const errorMsg = error?.message || String(error) || "Unknown error";
+    console.error("❌ Error fetching product stats:", errorMsg);
+    
+    // If it's a token expiration error, provide helpful message
+    if (errorMsg.includes("access token") || 
+        errorMsg.includes("Missing access token") ||
+        errorMsg.includes("session expired") ||
+        errorMsg.includes("Admin context is missing")) {
+      throw new Error("Session expired during product stats calculation. Please refresh the page to reload stats.");
+    }
+    
     throw error;
   }
 }

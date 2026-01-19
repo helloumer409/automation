@@ -3,6 +3,11 @@
  * Used by streaming helpers to avoid loading the entire catalog into memory.
  */
 async function fetchProductsPage(admin, cursor = null) {
+  // Validate admin context before making request
+  if (!admin || !admin.graphql) {
+    throw new Error("Missing access token when creating GraphQL client - admin context is invalid");
+  }
+
   const query = cursor
     ? `#graphql
       {
@@ -57,21 +62,46 @@ async function fetchProductsPage(admin, cursor = null) {
       }
     `;
 
-  const res = await admin.graphql(query);
-  const json = await res.json();
+  try {
+    const res = await admin.graphql(query);
+    
+    if (!res) {
+      throw new Error("GraphQL response is null - access token may have expired");
+    }
+    
+    const json = await res.json();
 
-  if (json.errors) {
-    throw new Error(json.errors.map((e) => e.message).join(", "));
+    if (json.errors) {
+      const errorMessages = json.errors.map((e) => e.message || String(e)).join(", ");
+      // Check for authentication errors
+      if (errorMessages.includes("401") || 
+          errorMessages.includes("Unauthorized") || 
+          errorMessages.includes("access token") ||
+          errorMessages.includes("Missing access token")) {
+        throw new Error("Missing access token when creating GraphQL client - session expired");
+      }
+      throw new Error(errorMessages);
+    }
+
+    const products = json.data?.products?.nodes || [];
+    const pageInfo = json.data?.products?.pageInfo || {};
+
+    return {
+      products,
+      hasNextPage: pageInfo.hasNextPage || false,
+      endCursor: pageInfo.endCursor || null,
+    };
+  } catch (error) {
+    // Re-throw with better error message if it's about token
+    const errorMsg = error?.message || String(error) || "Unknown error";
+    if (errorMsg.includes("access token") || 
+        errorMsg.includes("Missing access token") ||
+        errorMsg.includes("session expired") ||
+        errorMsg.includes("401")) {
+      throw new Error("Missing access token when creating GraphQL client - session expired");
+    }
+    throw error;
   }
-
-  const products = json.data?.products?.nodes || [];
-  const pageInfo = json.data?.products?.pageInfo || {};
-
-  return {
-    products,
-    hasNextPage: pageInfo.hasNextPage || false,
-    endCursor: pageInfo.endCursor || null,
-  };
 }
 
 /**
@@ -142,7 +172,25 @@ export async function countShopifyCatalog(admin) {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
     } catch (error) {
-      console.error(`❌ Error counting products page ${pageCount}:`, error.message);
+      const errorMsg = error?.message || String(error) || "Unknown error";
+      const errorStr = JSON.stringify(error);
+      
+      // Check if it's a token expiration error
+      if (errorMsg.includes("access token") || 
+          errorMsg.includes("Missing access token") ||
+          errorMsg.includes("401") ||
+          errorMsg.includes("Unauthorized") ||
+          errorStr.includes("access token")) {
+        console.error(`❌ Token expired while counting products page ${pageCount}: ${errorMsg}`);
+        throw new Error("Admin context lost - access token expired. Please restart the operation.");
+      }
+      
+      console.error(`❌ Error counting products page ${pageCount}: ${errorMsg}`);
+      // Don't break on single page errors - continue with next page if possible
+      // But throw if it's a critical error (like token expiration)
+      if (errorMsg.includes("access token") || errorMsg.includes("Missing access token")) {
+        throw error;
+      }
       break;
     }
   }
@@ -181,7 +229,25 @@ export async function forEachShopifyProduct(admin, callback) {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
     } catch (error) {
-      console.error(`❌ Error streaming products page ${pageCount}:`, error.message);
+      const errorMsg = error?.message || String(error) || "Unknown error";
+      const errorStr = JSON.stringify(error);
+      
+      // Check if it's a token expiration error
+      if (errorMsg.includes("access token") || 
+          errorMsg.includes("Missing access token") ||
+          errorMsg.includes("401") ||
+          errorMsg.includes("Unauthorized") ||
+          errorStr.includes("access token")) {
+        console.error(`❌ Token expired while streaming products page ${pageCount}: ${errorMsg}`);
+        throw new Error("Admin context lost - access token expired. Please restart the operation.");
+      }
+      
+      console.error(`❌ Error streaming products page ${pageCount}: ${errorMsg}`);
+      // Don't break on single page errors - continue with next page if possible
+      // But throw if it's a critical error (like token expiration)
+      if (errorMsg.includes("access token") || errorMsg.includes("Missing access token")) {
+        throw error;
+      }
       break;
     }
   }
