@@ -144,32 +144,63 @@ export async function getProductStats(admin) {
           // Try SKU matching (same logic as sync.server.js for consistency)
           if (!matched && variant.sku) {
             const skuStr = String(variant.sku).trim();
-            const skuParts = skuStr.split(/[-_]/); // Split on dash or underscore
+            const skuParts = skuStr.split(/[-_\s]/); // Split on dash, underscore, or space
             
             // Strategy 1: Try full SKU match first (case-insensitive)
             matched = apgIndex.has(skuStr) || apgIndex.has(skuStr.toUpperCase());
             
-            // Strategy 2: Try matching by part number substring
-            // Example: SKU "BHXS-ZT2-XTG6" contains "ZT2-XTG6" which should match "ACTZT2-XTG6"
+            // Helper function to normalize strings for matching (remove dashes/underscores for comparison)
+            const normalizeForMatch = (str) => str.replace(/[-_\s]/g, "").toUpperCase();
+            
+            // Strategy 2: Try matching by part number substring (more aggressive)
+            // Example: SKU "BHXS-ZT2-XTG6" should match "ACTZT2-XTG6" or "ACT-ZT2-XTG6"
             if (!matched && skuParts.length > 0) {
               // Try matching the last part(s) of SKU against Premier Part Number
               // For "BHXS-ZT2-XTG6", try "ZT2-XTG6", then "XTG6"
-              for (let i = skuParts.length - 1; i >= 0 && i >= skuParts.length - 2; i--) {
+              for (let i = skuParts.length - 1; i >= 0 && i >= skuParts.length - 3; i--) {
                 const partialSku = skuParts.slice(i).join("-");
                 const partialUpper = partialSku.toUpperCase();
+                const partialNormalized = normalizeForMatch(partialSku);
+                
                 // Try direct match in index (already indexed uppercase)
                 if (apgIndex.has(partialUpper)) {
                   matched = true;
                   break;
                 }
                 
-                // Try substring matching against part numbers
+                // Try substring matching against part numbers (with and without dashes)
+                // This handles cases like "ZT2-XTG6" matching "ACTZT2-XTG6"
                 for (const [key, item] of apgIndex.entries()) {
                   const partNum = String(item["Premier Part Number"] || "").trim().toUpperCase();
                   const mfgPartNum = String(item["Mfg Part Number"] || "").trim().toUpperCase();
-                  // Check if part number contains the SKU fragment or vice versa
-                  if ((partNum && (partNum.includes(partialUpper) || partialUpper.includes(partNum))) ||
-                      (mfgPartNum && (mfgPartNum.includes(partialUpper) || partialUpper.includes(mfgPartNum)))) {
+                  
+                  // Check if part number contains the SKU fragment (with dash variations)
+                  const partNumNormalized = normalizeForMatch(partNum);
+                  const mfgPartNumNormalized = normalizeForMatch(mfgPartNum);
+                  
+                  // Match if: part number contains SKU fragment (with or without dashes)
+                  if (partNum && (
+                      partNum.includes(partialUpper) || 
+                      partialUpper.includes(partNum) ||
+                      partNumNormalized.includes(partialNormalized) ||
+                      partialNormalized.includes(partNumNormalized) ||
+                      // Check if part number ends with the SKU fragment (handles "ACTZT2-XTG6" ending with "ZT2-XTG6")
+                      partNum.endsWith(partialUpper) ||
+                      partNumNormalized.endsWith(partialNormalized)
+                  )) {
+                    matched = true;
+                    break;
+                  }
+                  
+                  // Same check for Mfg Part Number
+                  if (mfgPartNum && (
+                      mfgPartNum.includes(partialUpper) || 
+                      partialUpper.includes(mfgPartNum) ||
+                      mfgPartNumNormalized.includes(partialNormalized) ||
+                      partialNormalized.includes(mfgPartNumNormalized) ||
+                      mfgPartNum.endsWith(partialUpper) ||
+                      mfgPartNumNormalized.endsWith(partialNormalized)
+                  )) {
                     matched = true;
                     break;
                   }
@@ -184,19 +215,66 @@ export async function getProductStats(admin) {
               const suffixParts = skuParts.slice(1); // Skip first prefix (e.g., "BHXS")
               const suffix = suffixParts.join("-");
               const suffixUpper = suffix.toUpperCase();
+              const suffixNormalized = normalizeForMatch(suffix);
+              
               // Try direct match
               if (apgIndex.has(suffixUpper)) {
                 matched = true;
               } else {
-                // Try substring matching
+                // Try substring matching with normalized comparison
                 for (const [key, item] of apgIndex.entries()) {
                   const partNum = String(item["Premier Part Number"] || "").trim().toUpperCase();
                   const mfgPartNum = String(item["Mfg Part Number"] || "").trim().toUpperCase();
-                  if (partNum.includes(suffixUpper) || mfgPartNum.includes(suffixUpper) ||
-                      suffixUpper.includes(partNum) || suffixUpper.includes(mfgPartNum)) {
+                  const partNumNormalized = normalizeForMatch(partNum);
+                  const mfgPartNumNormalized = normalizeForMatch(mfgPartNum);
+                  
+                  if (partNum && (
+                      partNum.includes(suffixUpper) || 
+                      suffixUpper.includes(partNum) ||
+                      partNumNormalized.includes(suffixNormalized) ||
+                      suffixNormalized.includes(partNumNormalized) ||
+                      partNum.endsWith(suffixUpper) ||
+                      partNumNormalized.endsWith(suffixNormalized)
+                  )) {
                     matched = true;
                     break;
                   }
+                  
+                  if (mfgPartNum && (
+                      mfgPartNum.includes(suffixUpper) || 
+                      suffixUpper.includes(mfgPartNum) ||
+                      mfgPartNumNormalized.includes(suffixNormalized) ||
+                      suffixNormalized.includes(mfgPartNumNormalized) ||
+                      mfgPartNum.endsWith(suffixUpper) ||
+                      mfgPartNumNormalized.endsWith(suffixNormalized)
+                  )) {
+                    matched = true;
+                    break;
+                  }
+                }
+              }
+            }
+            
+            // Strategy 4: Try removing common prefixes from both SKU and part number
+            // Common prefixes: BHXS, ACT, etc.
+            if (!matched && skuParts.length > 1) {
+              // Remove first part and try matching remaining parts
+              const withoutPrefix = skuParts.slice(1).join("");
+              const withoutPrefixUpper = withoutPrefix.toUpperCase();
+              
+              for (const [key, item] of apgIndex.entries()) {
+                const partNum = String(item["Premier Part Number"] || "").trim().toUpperCase();
+                const mfgPartNum = String(item["Mfg Part Number"] || "").trim().toUpperCase();
+                
+                // Try to find if part number contains the suffix without prefix
+                // e.g., "ACTZT2-XTG6" should match "ZT2XTG6" (from "BHXS-ZT2-XTG6")
+                const partNumNoDashes = normalizeForMatch(partNum);
+                const mfgPartNumNoDashes = normalizeForMatch(mfgPartNum);
+                
+                if ((partNumNoDashes.includes(withoutPrefixUpper) || withoutPrefixUpper.includes(partNumNoDashes)) ||
+                    (mfgPartNumNoDashes.includes(withoutPrefixUpper) || withoutPrefixUpper.includes(mfgPartNumNoDashes))) {
+                  matched = true;
+                  break;
                 }
               }
             }
@@ -210,28 +288,48 @@ export async function getProductStats(admin) {
             if (matchedKey) {
               apgItem = apgIndex.get(matchedKey);
             } else if (variant.sku) {
-              // Use same SKU matching logic to find the APG item
+              // Use same SKU matching logic to find the APG item (with normalized matching)
               const skuStr = String(variant.sku).trim();
-              const skuParts = skuStr.split(/[-_]/);
+              const skuParts = skuStr.split(/[-_\s]/);
+              const normalizeForMatch = (str) => str.replace(/[-_\s]/g, "").toUpperCase();
               
               // Try full SKU match
               apgItem = apgIndex.get(skuStr) || apgIndex.get(skuStr.toUpperCase());
               
-              // Try partial match
+              // Try partial match with normalized comparison
               if (!apgItem && skuParts.length > 0) {
-                for (let i = skuParts.length - 1; i >= 0 && i >= skuParts.length - 2; i--) {
+                for (let i = skuParts.length - 1; i >= 0 && i >= skuParts.length - 3; i--) {
                   const partialSku = skuParts.slice(i).join("-");
                   const partialUpper = partialSku.toUpperCase();
+                  const partialNormalized = normalizeForMatch(partialSku);
+                  
                   if (apgIndex.has(partialUpper)) {
                     apgItem = apgIndex.get(partialUpper);
                     break;
                   }
-                  // Try substring matching
+                  // Try substring matching with normalized comparison
                   for (const [key, item] of apgIndex.entries()) {
                     const partNum = String(item["Premier Part Number"] || "").trim().toUpperCase();
                     const mfgPartNum = String(item["Mfg Part Number"] || "").trim().toUpperCase();
-                    if ((partNum && (partNum.includes(partialUpper) || partialUpper.includes(partNum))) ||
-                        (mfgPartNum && (mfgPartNum.includes(partialUpper) || partialUpper.includes(mfgPartNum)))) {
+                    const partNumNormalized = normalizeForMatch(partNum);
+                    const mfgPartNumNormalized = normalizeForMatch(mfgPartNum);
+                    
+                    if ((partNum && (
+                        partNum.includes(partialUpper) || 
+                        partialUpper.includes(partNum) ||
+                        partNumNormalized.includes(partialNormalized) ||
+                        partialNormalized.includes(partNumNormalized) ||
+                        partNum.endsWith(partialUpper) ||
+                        partNumNormalized.endsWith(partialNormalized)
+                    )) ||
+                        (mfgPartNum && (
+                        mfgPartNum.includes(partialUpper) || 
+                        partialUpper.includes(mfgPartNum) ||
+                        mfgPartNumNormalized.includes(partialNormalized) ||
+                        partialNormalized.includes(mfgPartNumNormalized) ||
+                        mfgPartNum.endsWith(partialUpper) ||
+                        mfgPartNumNormalized.endsWith(partialNormalized)
+                    ))) {
                       apgItem = item;
                       break;
                     }
@@ -240,22 +338,60 @@ export async function getProductStats(admin) {
                 }
               }
               
-              // Try suffix match
+              // Try suffix match with normalized comparison
               if (!apgItem && skuParts.length > 1) {
                 const suffixParts = skuParts.slice(1);
                 const suffix = suffixParts.join("-");
                 const suffixUpper = suffix.toUpperCase();
+                const suffixNormalized = normalizeForMatch(suffix);
+                
                 if (apgIndex.has(suffixUpper)) {
                   apgItem = apgIndex.get(suffixUpper);
                 } else {
                   for (const [key, item] of apgIndex.entries()) {
                     const partNum = String(item["Premier Part Number"] || "").trim().toUpperCase();
                     const mfgPartNum = String(item["Mfg Part Number"] || "").trim().toUpperCase();
-                    if (partNum.includes(suffixUpper) || mfgPartNum.includes(suffixUpper) ||
-                        suffixUpper.includes(partNum) || suffixUpper.includes(mfgPartNum)) {
+                    const partNumNormalized = normalizeForMatch(partNum);
+                    const mfgPartNumNormalized = normalizeForMatch(mfgPartNum);
+                    
+                    if ((partNum && (
+                        partNum.includes(suffixUpper) || 
+                        suffixUpper.includes(partNum) ||
+                        partNumNormalized.includes(suffixNormalized) ||
+                        suffixNormalized.includes(partNumNormalized) ||
+                        partNum.endsWith(suffixUpper) ||
+                        partNumNormalized.endsWith(suffixNormalized)
+                    )) ||
+                        (mfgPartNum && (
+                        mfgPartNum.includes(suffixUpper) || 
+                        suffixUpper.includes(mfgPartNum) ||
+                        mfgPartNumNormalized.includes(suffixNormalized) ||
+                        suffixNormalized.includes(mfgPartNumNormalized) ||
+                        mfgPartNum.endsWith(suffixUpper) ||
+                        mfgPartNumNormalized.endsWith(suffixNormalized)
+                    ))) {
                       apgItem = item;
                       break;
                     }
+                  }
+                }
+              }
+              
+              // Try prefix removal strategy
+              if (!apgItem && skuParts.length > 1) {
+                const withoutPrefix = skuParts.slice(1).join("");
+                const withoutPrefixUpper = withoutPrefix.toUpperCase();
+                
+                for (const [key, item] of apgIndex.entries()) {
+                  const partNum = String(item["Premier Part Number"] || "").trim().toUpperCase();
+                  const mfgPartNum = String(item["Mfg Part Number"] || "").trim().toUpperCase();
+                  const partNumNoDashes = normalizeForMatch(partNum);
+                  const mfgPartNumNoDashes = normalizeForMatch(mfgPartNum);
+                  
+                  if ((partNumNoDashes.includes(withoutPrefixUpper) || withoutPrefixUpper.includes(partNumNoDashes)) ||
+                      (mfgPartNumNoDashes.includes(withoutPrefixUpper) || withoutPrefixUpper.includes(mfgPartNumNoDashes))) {
+                    apgItem = item;
+                    break;
                   }
                 }
               }
