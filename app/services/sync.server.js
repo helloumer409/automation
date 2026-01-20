@@ -128,27 +128,32 @@ export async function performSync(admin, shop) {
         continue;
       }
 
-      // Try multiple barcode formats for matching
-      const barcodeStr = String(variant.barcode).trim();
-      const normalizedBarcode = barcodeStr.replace(/^0+/, ""); // Remove leading zeros
-      const padded12 = normalizedBarcode.padStart(12, "0");
-      const padded13 = normalizedBarcode.padStart(13, "0");
-      const padded14 = normalizedBarcode.padStart(14, "0");
-      
       let apgItem = null;
       
-      // Try multiple formats
-      const lookupKeys = [
-        barcodeStr,              // Original format: "00012748802600"
-        normalizedBarcode,       // Without leading zeros: "12748802600"
-        padded12,                // 12-digit
-        padded13,                // 13-digit
-        padded14                 // 14-digit
-      ];
-      
-      for (const key of lookupKeys) {
-        apgItem = apgIndex.get(key);
-        if (apgItem) break;
+      // Try multiple barcode formats for matching (only if barcode exists)
+      if (variant.barcode) {
+        const barcodeStr = String(variant.barcode).trim();
+        // Skip if barcode is invalid (null/undefined converted to string)
+        if (barcodeStr && barcodeStr !== "null" && barcodeStr !== "undefined") {
+          const normalizedBarcode = barcodeStr.replace(/^0+/, ""); // Remove leading zeros
+          const padded12 = normalizedBarcode.padStart(12, "0");
+          const padded13 = normalizedBarcode.padStart(13, "0");
+          const padded14 = normalizedBarcode.padStart(14, "0");
+          
+          // Try multiple formats
+          const lookupKeys = [
+            barcodeStr,              // Original format: "00012748802600"
+            normalizedBarcode,       // Without leading zeros: "12748802600"
+            padded12,                // 12-digit
+            padded13,                // 13-digit
+            padded14                 // 14-digit
+          ];
+          
+          for (const key of lookupKeys) {
+            apgItem = apgIndex.get(key);
+            if (apgItem) break;
+          }
+        }
       }
       
       // Try SKU as fallback (before UPC variations)

@@ -515,7 +515,7 @@ export default function Index() {
         )}
         
         {/* Show progress bar if auto-sync is running (status is "running" OR progress > 0) OR session expired but sync may be running */}
-        {autoSyncEnabled && (progressFetcher.data?.success && (progressFetcher.data?.status === "running" || (progressFetcher.data?.progress > 0 && progressFetcher.data?.progress < 100)) || progressFetcher.data?.requiresReauth) && (
+        {autoSyncEnabled && ((progressFetcher.data?.success && (progressFetcher.data?.status === "running" || (progressFetcher.data?.progress > 0 && progressFetcher.data?.progress < 100))) || progressFetcher.data?.requiresReauth) && (
           <div style={{ marginTop: "0.75rem" }}>
             <s-text variant="bodySm" tone={progressFetcher.data?.requiresReauth ? "warning" : "info"} style={{ marginBottom: "0.5rem" }}>
               {progressFetcher.data?.requiresReauth 

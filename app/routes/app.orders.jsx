@@ -94,7 +94,7 @@ export default function OrdersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {recentOrders.map((order) => {
+                  {filteredOrders.map((order) => {
                     const total = order.totalPriceSet?.shopMoney;
                     const created = order.createdAt
                       ? new Date(order.createdAt).toLocaleString()
