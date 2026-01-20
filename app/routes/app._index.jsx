@@ -9,91 +9,107 @@ import { getRecentOrders } from "../services/shopify-orders.server";
 
 
 export const loader = async ({ request }) => {
-  let admin, session, shop;
-  
+  // Wrap entire loader in try-catch to prevent app crashes
   try {
-    const authResult = await authenticate.admin(request);
-    admin = authResult.admin;
-    session = authResult.session;
-    shop = session.shop;
-  } catch (error) {
-    console.error("❌ Authentication failed in app._index loader:", error);
-    // Re-throw with user-friendly error
-    throw new Response(
-      JSON.stringify({
-        error: "Authentication failed",
-        message: "Your session has expired. Please reinstall the app from your Shopify admin.",
-      }),
-      {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      }
-    );
-  }
-  
-  // Get latest sync stats
-  const latestStats = await getLatestSyncStats(shop);
+    let admin, session, shop;
+    
+    try {
+      const authResult = await authenticate.admin(request);
+      admin = authResult.admin;
+      session = authResult.session;
+      shop = session.shop;
+    } catch (error) {
+      console.error("❌ Authentication failed in app._index loader:", error);
+      // Re-throw with user-friendly error
+      throw new Response(
+        JSON.stringify({
+          error: "Authentication failed",
+          message: "Your session has expired. Please reinstall the app from your Shopify admin.",
+        }),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+    
+    // Get latest sync stats (non-blocking - if it fails, return null)
+    let latestStats = null;
+    try {
+      latestStats = await getLatestSyncStats(shop);
+    } catch (error) {
+      console.log("ℹ️ Failed to load sync stats (non-critical):", error.message);
+      latestStats = null;
+    }
 
-  // Get recent orders (keep list small to avoid heavy memory usage)
-  let recentOrders = [];
-  try {
-    recentOrders = await getRecentOrders(admin, 20);
-  } catch (error) {
-    console.log("ℹ️ Recent orders load failed:", error.message);
-    recentOrders = [];
-  }
-  
-  // Get product stats - try to load full stats, but fall back to basic if it takes too long
-  let productStats = null;
-  try {
-    // Try to load full stats (with APG matching) - use Promise.race to timeout after 10 seconds
-    const fullStatsPromise = getProductStats(admin);
-    const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 10000)); // 10 second timeout
+    // Get recent orders (keep list small to avoid heavy memory usage)
+    let recentOrders = [];
+    try {
+      recentOrders = await getRecentOrders(admin, 20);
+    } catch (error) {
+      console.log("ℹ️ Recent orders load failed:", error.message);
+      recentOrders = [];
+    }
     
-    productStats = await Promise.race([fullStatsPromise, timeoutPromise]);
-    
-    if (!productStats) {
-      // Timeout - load basic stats instead
-      console.log("⏱️ Full stats timed out, loading basic stats...");
-      productStats = await getBasicProductStats(admin);
-      console.log(`✅ Basic product stats loaded: ${productStats.totalProducts} products, ${productStats.totalVariants} variants`);
+    // Get product stats - make it completely non-blocking with shorter timeout
+    // If stats fail, app should still load - stats can be fetched in background
+    let productStats = null;
+    try {
+      // Try basic stats first (faster, more reliable)
+      const basicStatsPromise = getBasicProductStats(admin);
+      const statsTimeout = new Promise((resolve) => setTimeout(() => resolve(null), 5000)); // 5 second timeout
       
-      // Continue loading full stats in background
-      fullStatsPromise.then((fullStats) => {
+      productStats = await Promise.race([basicStatsPromise, statsTimeout]);
+      
+      if (!productStats) {
+        console.log("⏱️ Basic stats timed out - will load in background");
+        // Don't block - let frontend fetch stats via fetcher
+        productStats = null;
+      } else {
+        console.log(`✅ Basic product stats loaded: ${productStats.totalProducts} products, ${productStats.totalVariants} variants`);
+      }
+      
+      // Load full stats in background (non-blocking)
+      getProductStats(admin).then((fullStats) => {
         console.log(`✅ Full product stats loaded in background: ${fullStats.matchedWithAPG} matched with APG`);
       }).catch((err) => {
         console.log("ℹ️ Full stats loading failed (non-critical):", err.message);
       });
-    } else {
-      console.log(`✅ Full product stats loaded: ${productStats.matchedWithAPG} matched with APG`);
+    } catch (error) {
+      // If stats fail completely, don't crash the app
+      console.error("❌ Error loading product stats (non-critical):", error.message);
+      productStats = null; // Frontend will show loading state and fetch via fetcher
     }
-  } catch (error) {
-    // If stats fail, try basic stats
-    console.error("❌ Error loading product stats:", error.message);
-    try {
-      productStats = await getBasicProductStats(admin);
-      console.log(`✅ Basic product stats loaded as fallback: ${productStats.totalProducts} products`);
-    } catch (basicError) {
-      console.error("❌ Error loading basic product stats:", basicError.message);
-      productStats = null; // Show loading state on frontend
-    }
-  }
-  
-  // Check if auto-sync is enabled
-  // Auto-sync is enabled by default (runs every 6 hours)
-  // Can be disabled with AUTO_SYNC_DISABLED=true
-  // Schedule can be customized with AUTO_SYNC_SCHEDULE env var
-  const autoSyncDisabled = process.env.AUTO_SYNC_DISABLED === "true";
-  const autoSyncEnabled = !autoSyncDisabled;
-  const autoSyncSchedule = process.env.AUTO_SYNC_SCHEDULE || "0 */6 * * * (every 6 hours - default)";
+    
+    // Check if auto-sync is enabled
+    // Auto-sync is enabled by default (runs every 6 hours)
+    // Can be disabled with AUTO_SYNC_DISABLED=true
+    // Schedule can be customized with AUTO_SYNC_SCHEDULE env var
+    const autoSyncDisabled = process.env.AUTO_SYNC_DISABLED === "true";
+    const autoSyncEnabled = !autoSyncDisabled;
+    const autoSyncSchedule = process.env.AUTO_SYNC_SCHEDULE || "0 */6 * * * (every 6 hours - default)";
 
-  return {
-    latestStats,
-    productStats,
-    autoSyncEnabled,
-    autoSyncSchedule,
-    recentOrders,
-  };
+    return {
+      latestStats,
+      productStats,
+      autoSyncEnabled,
+      autoSyncSchedule,
+      recentOrders,
+    };
+  } catch (error) {
+    // Catch any unhandled errors to prevent app crash
+    console.error("❌ Critical error in app._index loader:", error);
+    
+    // Return minimal data so app can still render
+    return {
+      latestStats: null,
+      productStats: null,
+      autoSyncEnabled: process.env.AUTO_SYNC_DISABLED !== "true",
+      autoSyncSchedule: process.env.AUTO_SYNC_SCHEDULE || "0 */6 * * * (every 6 hours - default)",
+      recentOrders: [],
+      error: error.message || "Failed to load dashboard data",
+    };
+  }
 };
 
 export const action = async ({ request }) => {
